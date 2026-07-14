@@ -87,8 +87,9 @@ class PaymentUpdate(BaseModel):
 
 @invoice_router.patch("/{invoice_id}")
 async def update_invoice_payment(invoice_id: str, payload: PaymentUpdate, current_user: dict = Depends(get_current_user)):
-    if current_user["role"] != "admin":
-        raise HTTPException(status_code=403, detail="Admin only")
+    # Only super_admin can update invoice payment status
+    if current_user["role"] != "super_admin":
+        raise HTTPException(status_code=403, detail="Only Super Admin can update payment status")
 
     result = await db.invoices.update_one(
         {"_id": ObjectId(invoice_id)},

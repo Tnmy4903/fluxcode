@@ -19,13 +19,18 @@ admin_router = APIRouter()
 
 
 # ───────────────────────────────
-# 🧠 Admin Welcome Route
+# 🧠 Admin Welcome Route (Super Admin Only)
 # ───────────────────────────────
 @admin_router.get("/dashboard")
 async def admin_dashboard(current_user: dict = Depends(get_current_user)):
-    if current_user["role"] != "admin":
-        raise HTTPException(status_code=403, detail="Not authorized")
-    return {"message": f"Welcome Admin {current_user['name']}"}
+    if current_user["role"] not in ["super_admin", "sub_admin"]:
+        raise HTTPException(status_code=403, detail="Admin access only")
+    
+    role_display = "Super Admin" if current_user["role"] == "super_admin" else "Sub-Admin"
+    return {
+        "message": f"Welcome {role_display} {current_user['name']}",
+        "role": current_user["role"]
+    }
 
 
 # ───────────────────────────────
@@ -33,8 +38,8 @@ async def admin_dashboard(current_user: dict = Depends(get_current_user)):
 # ───────────────────────────────
 @admin_router.get("/projects", response_model=List[ProjectOut])
 async def get_all_projects(current_user: dict = Depends(get_current_user)):
-    if current_user["role"] != "admin":
-        raise HTTPException(status_code=403, detail="Admin only access")
+    if current_user["role"] not in ["super_admin", "sub_admin"]:
+        raise HTTPException(status_code=403, detail="Admin access only")
 
     cursor = db.projects.find().sort("createdAt", -1)
     projects = []
@@ -51,8 +56,9 @@ class StatusUpdate(BaseModel):
 
 @admin_router.patch("/projects/{id}/status")
 async def update_project_status(id: str, payload: StatusUpdate, current_user: dict = Depends(get_current_user)):
-    if current_user["role"] != "admin":
-        raise HTTPException(status_code=403, detail="Admin only access")
+    # Only super_admin can update status
+    if current_user["role"] != "super_admin":
+        raise HTTPException(status_code=403, detail="Only Super Admin can update project status")
 
     if payload.status not in ["pending", "accepted", "in_progress", "delivered"]:
         raise HTTPException(status_code=400, detail="Invalid status")
@@ -73,8 +79,9 @@ class BudgetUpdate(BaseModel):
 
 @admin_router.patch("/projects/{id}/budget")
 async def update_project_budget(id: str, payload: BudgetUpdate, current_user: dict = Depends(get_current_user)):
-    if current_user["role"] != "admin":
-        raise HTTPException(status_code=403, detail="Admin only access")
+    # Only super_admin can update budget/price
+    if current_user["role"] != "super_admin":
+        raise HTTPException(status_code=403, detail="Only Super Admin can set project budget/price")
 
     result = await db.projects.update_one(
         {"_id": ObjectId(id)},
@@ -88,12 +95,13 @@ async def update_project_budget(id: str, payload: BudgetUpdate, current_user: di
 
 
 # ───────────────────────────────
-# 🧾 Invoice Generation
+# 🧾 Invoice Generation (Super Admin Only)
 # ───────────────────────────────
 @admin_router.post("/projects/{id}/invoice", response_model=InvoiceOut)
 async def generate_invoice(id: str, current_user: dict = Depends(get_current_user)):
-    if current_user["role"] != "admin":
-        raise HTTPException(status_code=403, detail="Admin only access")
+    # Only super_admin can generate invoices
+    if current_user["role"] != "super_admin":
+        raise HTTPException(status_code=403, detail="Only Super Admin can generate invoices")
 
     project = await db.projects.find_one({"_id": ObjectId(id)})
     if not project:
@@ -138,12 +146,12 @@ async def generate_invoice(id: str, current_user: dict = Depends(get_current_use
 
 
 # ───────────────────────────────
-# 📂 Admin Upload Manager
+# 📂 Admin Upload Manager (View: All Admins, Delete: Super Admin Only)
 # ───────────────────────────────
 @admin_router.get("/uploads", response_model=List[FileUploadOut])
 async def list_all_uploads(current_user: dict = Depends(get_current_user)):
-    if current_user["role"] != "admin":
-        raise HTTPException(status_code=403, detail="Admin only")
+    if current_user["role"] not in ["super_admin", "sub_admin"]:
+        raise HTTPException(status_code=403, detail="Admin access only")
 
     cursor = db.uploads.find().sort("uploadedAt", -1)
     results = []
@@ -157,8 +165,9 @@ async def list_all_uploads(current_user: dict = Depends(get_current_user)):
 
 @admin_router.delete("/uploads/{id}")
 async def delete_upload(id: str, current_user: dict = Depends(get_current_user)):
-    if current_user["role"] != "admin":
-        raise HTTPException(status_code=403, detail="Admin only")
+    # Only super_admin can delete uploads
+    if current_user["role"] != "super_admin":
+        raise HTTPException(status_code=403, detail="Only Super Admin can delete uploads")
 
     upload = await db.uploads.find_one({"_id": ObjectId(id)})
     if not upload:
@@ -173,15 +182,16 @@ async def delete_upload(id: str, current_user: dict = Depends(get_current_user))
 
 
 # ───────────────────────────────
-# 📊 Admin Summary Endpoint
+# 📊 Admin Summary Endpoint (Both Admins Can View)
 # ───────────────────────────────
 @admin_router.get("/summary")
 async def get_admin_summary(current_user: dict = Depends(get_current_user)):
-    if current_user["role"] != "admin":
-        raise HTTPException(status_code=403, detail="Admin only")
+    if current_user["role"] not in ["super_admin", "sub_admin"]:
+        raise HTTPException(status_code=403, detail="Admin access only")
 
     total_users = await db.users.count_documents({})
-    admin_count = await db.users.count_documents({"role": "admin"})
+    super_admin_count = await db.users.count_documents({"role": "super_admin"})
+    sub_admin_count = await db.users.count_documents({"role": "sub_admin"})
     client_count = await db.users.count_documents({"role": "client"})
 
     total_projects = await db.projects.count_documents({})
@@ -200,7 +210,8 @@ async def get_admin_summary(current_user: dict = Depends(get_current_user)):
     return {
         "users": {
             "total": total_users,
-            "admins": admin_count,
+            "super_admin": super_admin_count,
+            "sub_admin": sub_admin_count,
             "clients": client_count
         },
         "projects": {
@@ -221,12 +232,13 @@ async def get_admin_summary(current_user: dict = Depends(get_current_user)):
 
 
 # ───────────────────────────────
-# 📧 Email Invoice to Client
+# 📧 Email Invoice to Client (Super Admin Only)
 # ───────────────────────────────
 @admin_router.post("/invoices/{invoice_id}/send")
 async def send_invoice(invoice_id: str, current_user: dict = Depends(get_current_user)):
-    if current_user["role"] != "admin":
-        raise HTTPException(status_code=403, detail="Admin only")
+    # Only super_admin can send invoices
+    if current_user["role"] != "super_admin":
+        raise HTTPException(status_code=403, detail="Only Super Admin can send invoices")
 
     invoice = await db.invoices.find_one({"_id": ObjectId(invoice_id)})
     if not invoice:

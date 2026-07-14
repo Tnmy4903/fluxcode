@@ -12,12 +12,12 @@ blog_router = APIRouter()
 
 
 # ───────────────────────────────
-# ✍️ Create Blog (Admin Only)
+# ✍️ Create Blog (Super Admin Only)
 # ───────────────────────────────
 @blog_router.post("/", response_model=BlogOut)
 async def create_blog(blog: BlogCreate, current_user: dict = Depends(get_current_user)):
-    if current_user["role"] != "admin":
-        raise HTTPException(status_code=403, detail="Not authorized")
+    if current_user["role"] != "super_admin":
+        raise HTTPException(status_code=403, detail="Only Super Admin can create blogs")
 
     existing_slug = await db.blogs.find_one({"slug": blog.slug})
     if existing_slug:
@@ -68,12 +68,12 @@ async def get_blog_by_slug(slug: str):
 
 
 # ───────────────────────────────
-# ❌ Delete Blog (Admin Only)
+# ❌ Delete Blog (Super Admin Only)
 # ───────────────────────────────
 @blog_router.delete("/{id}")
 async def delete_blog(id: str, current_user: dict = Depends(get_current_user)):
-    if current_user["role"] != "admin":
-        raise HTTPException(status_code=403, detail="Not authorized")
+    if current_user["role"] != "super_admin":
+        raise HTTPException(status_code=403, detail="Only Super Admin can delete blogs")
 
     try:
         obj_id = ObjectId(id)

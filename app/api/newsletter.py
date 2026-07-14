@@ -9,7 +9,7 @@ newsletter_router = APIRouter()
 
 
 # ──────────────────────────────────────────────────
-# 📧 Admin Newsletter Broadcast to Subscribers
+# 📧 Admin Newsletter Broadcast to Subscribers (Super Admin Only)
 # ──────────────────────────────────────────────────
 @newsletter_router.post("/send", response_model=NewsletterSendOut)
 async def send_newsletter(
@@ -18,8 +18,9 @@ async def send_newsletter(
     file: UploadFile = File(None),
     current_user: dict = Depends(get_current_user)
 ):
-    if current_user["role"] != "admin":
-        raise HTTPException(status_code=403, detail="Admin only")
+    # Only super_admin can send newsletters
+    if current_user["role"] != "super_admin":
+        raise HTTPException(status_code=403, detail="Only Super Admin can send newsletters")
 
     cursor = db.newsletter.find()
     recipients = [entry["email"] async for entry in cursor]
