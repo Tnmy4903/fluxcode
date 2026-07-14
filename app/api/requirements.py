@@ -4,7 +4,12 @@ Requirements Module API
 from fastapi import APIRouter, Depends, HTTPException
 from typing import List
 
-from app.db.schemas import RequirementCreate, RequirementUpdate, RequirementOut
+from app.db.schemas import (
+    RequirementCreate,
+    RequirementUpdate,
+    RequirementOut,
+    RequirementApprovalRequest
+)
 from app.services.service_layer import RequirementService, ActivityLogService
 from app.exceptions import exception_to_http
 from app.logger import logger_project
@@ -23,8 +28,10 @@ async def create_requirement(req: RequirementCreate, current_user: dict = Depend
             raise HTTPException(status_code=403, detail="Only admins can create requirements")
         
         req_dict = req.dict()
-        result = await requirement_service.create_requirement(**req_dict)
-        
+        result = await requirement_service.create_requirement(
+            created_by=current_user["id"],
+            **req_dict
+        )
         await activity_service.log_activity(
             current_user["id"], current_user["role"],
             "Requirement Created", "Requirement", result["id"]
@@ -58,7 +65,11 @@ async def update_requirement(requirement_id: str, updates: RequirementUpdate, cu
             raise HTTPException(status_code=403, detail="Only admins can update requirements")
         
         update_dict = updates.dict(exclude_unset=True)
-        result = await requirement_service.update_requirement(requirement_id, **update_dict)
+        result = await requirement_service.update_requirement(
+            requirement_id=requirement_id,
+            updated_by=current_user["id"],
+            **update_dict
+        )
         
         await activity_service.log_activity(
             current_user["id"], current_user["role"],
@@ -70,7 +81,81 @@ async def update_requirement(requirement_id: str, updates: RequirementUpdate, cu
         return result
     except Exception as e:
         raise exception_to_http(e)
+    
+@requirement_router.patch("/requirements/{requirement_id}/approve", response_model=dict)
+async def approve_requirement(
+    requirement_id: str,
+    payload: RequirementApprovalRequest,
+    current_user: dict = Depends(get_current_user)
+):
+    """Approve requirement (Super Admin only)"""
+    try:
 
+        if current_user["role"] != "super_admin":
+            raise HTTPException(
+                status_code=403,
+                detail="Only Super Admin can approve requirements"
+            )
+
+        result = await requirement_service.approve_requirement(
+            requirement_id=requirement_id,
+            approved_by=current_user["id"],
+            remarks=payload.remarks
+        )
+
+        await activity_service.log_activity(
+            current_user["id"],
+            current_user["role"],
+            "Requirement Approved",
+            "Requirement",
+            requirement_id
+        )
+
+        logger_project.info(
+            f"Requirement approved: {requirement_id} by {current_user['email']}"
+        )
+
+        return result
+
+    except Exception as e:
+        raise exception_to_http(e)
+
+@requirement_router.patch("/requirements/{requirement_id}/request-changes", response_model=dict)
+async def request_requirement_changes(
+    requirement_id: str,
+    payload: RequirementApprovalRequest,
+    current_user: dict = Depends(get_current_user)
+):
+    """Request requirement changes (Super Admin only)"""
+    try:
+
+        if current_user["role"] != "super_admin":
+            raise HTTPException(
+                status_code=403,
+                detail="Only Super Admin can request changes"
+            )
+
+        result = await requirement_service.request_changes(
+            requirement_id=requirement_id,
+            remarks=payload.remarks
+        )
+
+        await activity_service.log_activity(
+            current_user["id"],
+            current_user["role"],
+            "Requirement Changes Requested",
+            "Requirement",
+            requirement_id
+        )
+
+        logger_project.info(
+            f"Requirement changes requested: {requirement_id}"
+        )
+
+        return result
+
+    except Exception as e:
+        raise exception_to_http(e)
 
 @requirement_router.delete("/requirements/{requirement_id}", response_model=dict)
 async def delete_requirement(requirement_id: str, current_user: dict = Depends(get_current_user)):

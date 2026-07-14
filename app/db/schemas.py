@@ -2,6 +2,7 @@ from pydantic import BaseModel, EmailStr
 from fastapi import UploadFile
 from typing import Optional, List, Dict, Any
 from datetime import datetime, date
+from enum import Enum
 
 # ───────────────────────────────
 # 📦 Auth/User Schemas
@@ -160,6 +161,11 @@ class LeadHistoryEvent(BaseModel):
 # 📋 Requirement Schemas
 # ───────────────────────────────
 
+class RequirementStatus(str, Enum):
+    PENDING = "PENDING"
+    CHANGES_REQUESTED = "CHANGES_REQUESTED"
+    APPROVED = "APPROVED"
+
 class RequirementCreate(BaseModel):
     leadId: Optional[str] = None
     projectId: Optional[str] = None
@@ -190,8 +196,17 @@ class RequirementUpdate(BaseModel):
 
 class RequirementOut(RequirementCreate):
     id: str
+    status: RequirementStatus
+    approvedBy: Optional[str] = None
+    approvedAt: Optional[datetime] = None
+    remarks: Optional[str] = None
+    lastUpdatedBy: Optional[str] = None
+    lastUpdatedAt: Optional[datetime] = None
     createdAt: datetime
     updatedAt: datetime
+
+class RequirementApprovalRequest(BaseModel):
+    remarks: Optional[str] = None
 
 # ───────────────────────────────
 # 💰 Quotation Schemas

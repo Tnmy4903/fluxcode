@@ -175,6 +175,10 @@ class ContactRepository(BaseRepository):
     def __init__(self):
         super().__init__("contact_forms")
 
+    async def find_by_email(self, email: str):
+        """Find latest contact by email"""
+        return await self.find_one({"email": email})
+
 
 class NewsletterRepository(BaseRepository):
     """Newsletter subscriber repository"""

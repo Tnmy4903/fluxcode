@@ -15,7 +15,7 @@ from app.repositories import (
 from app.db.models import hash_password, verify_password
 from app.exceptions import (
     AuthenticationException, AuthorizationException, 
-    ResourceNotFoundException, DuplicateException, PermissionException
+    ResourceNotFoundException, DuplicateException, PermissionException, ValidationException
 )
 from app.logger import logger_auth, logger_project, logger_blog
 from app.services.email import send_contact_alert, send_invoice_email, send_mass_email
@@ -353,20 +353,90 @@ class ContactService:
     
     def __init__(self):
         self.contact_repo = ContactRepository()
-    
+        self.lead_repo = LeadRepository()
+        self.user_repo = UserRepository()
+        self.activity_service = ActivityLogService()
+        self.notification_service = NotificationService()
+
     async def submit_contact_form(self, name: str, email: str, message: str) -> dict:
-        """Submit contact form"""
+        """Submit contact form and auto-create CRM lead"""
+
+        # Save contact form
         contact_data = {
             "name": name,
             "email": email,
             "message": message
         }
-        
+
         contact_id = await self.contact_repo.create(contact_data)
-        
-        # Send email alert to admin
+
+        # Auto create CRM Lead (only if not exists)
+        existing_lead = await self.lead_repo.find_by_email(email)
+
+        if existing_lead:
+
+            await self.lead_repo.add_history_entry(
+                str(existing_lead["_id"]),
+                {
+                    "action": "Website Contact Form Submitted Again",
+                    "performedBy": "system",
+                    "message": message
+                }
+            )
+
+            await self.activity_service.log_activity(
+                user_id="system",
+                user_role="system",
+                action="Existing Lead Contacted Again",
+                entity="Lead",
+                entity_id=str(existing_lead["_id"]),
+                details={
+                    "source": "Website Contact Form"
+                }
+            )
+
+        else:
+
+            lead_data = {
+                "companyName": None,
+                "contactPerson": name,
+                "phone": None,
+                "email": email,
+                "business": "Website Enquiry",
+                "leadSource": "Website Contact Form",
+                "notes": message,
+                "stage": "New",
+                "assignedTo": None,
+                "history": []
+            }
+
+            lead_id = await self.lead_repo.create(lead_data)
+
+            await self.activity_service.log_activity(
+                user_id="system",
+                user_role="system",
+                action="Lead Auto Created",
+                entity="Lead",
+                entity_id=lead_id,
+                details={
+                    "source": "Website Contact Form"
+                }
+            )
+
+            admins = await self.user_repo.get_by_role("super_admin")
+
+            for admin in admins:
+                await self.notification_service.create_notification(
+                    user_id=str(admin["_id"]),
+                    notif_type="lead",
+                    title="New Website Lead",
+                    message=f"{name} ({email}) submitted a new website enquiry.",
+                    entity_id=lead_id,
+                    entity_type="Lead"
+                )
+        # Existing behaviour
         send_contact_alert(name, email, message)
-        
+
         return {
             "id": contact_id,
             "name": name,
@@ -458,31 +528,119 @@ class RequirementService:
     def __init__(self):
         self.req_repo = RequirementRepository()
     
-    async def create_requirement(self, lead_id: str = None, project_id: str = None, **req_data) -> dict:
+    async def create_requirement(
+        self,
+        lead_id: str = None,
+        project_id: str = None,
+        created_by: str = None,
+        **req_data
+    ) -> dict:
         """Create requirement documentation"""
+
         if not lead_id and not project_id:
             raise PermissionException("Either lead_id or project_id must be provided")
-        
+
         req_data["leadId"] = lead_id
         req_data["projectId"] = project_id
-        
+
+        # Business Workflow
+        req_data["status"] = "PENDING"
+        req_data["approvedBy"] = None
+        req_data["approvedAt"] = None
+        req_data["remarks"] = None
+        req_data["lastUpdatedBy"] = created_by
+        req_data["lastUpdatedAt"] = datetime.utcnow()
+
         req_id = await self.req_repo.create(req_data)
-        req_data["id"] = req_id
-        
-        return req_data
+
+        created_req = await self.req_repo.find_by_id(req_id)
+        created_req["id"] = req_id
+
+        return created_req
     
-    async def update_requirement(self, requirement_id: str, **updates) -> dict:
+    async def update_requirement(
+        self,
+        requirement_id: str,
+        updated_by: str,
+        **updates
+    ) -> dict:
         """Update requirement"""
+
         req = await self.req_repo.find_by_id(requirement_id)
+
         if not req:
             raise ResourceNotFoundException("Requirement")
-        
+
+        # Approved requirements cannot be edited directly
+        if req.get("status") == "APPROVED":
+            raise ValidationException(
+                "Approved requirement cannot be edited. Request changes first."
+            )
+
+        updates["status"] = "PENDING"
+        updates["lastUpdatedBy"] = updated_by
+        updates["lastUpdatedAt"] = datetime.utcnow()
+
         await self.req_repo.update(requirement_id, updates)
-        
+
         updated_req = await self.req_repo.find_by_id(requirement_id)
+
         updated_req["id"] = str(updated_req["_id"])
-        
+
         return updated_req
+    
+    async def approve_requirement(
+        self,
+        requirement_id: str,
+        approved_by: str,
+        remarks: str = None
+    ) -> dict:
+
+        req = await self.req_repo.find_by_id(requirement_id)
+
+        if not req:
+            raise ResourceNotFoundException("Requirement")
+
+        await self.req_repo.update(
+            requirement_id,
+            {
+                "status": "APPROVED",
+                "approvedBy": approved_by,
+                "approvedAt": datetime.utcnow(),
+                "remarks": remarks
+            }
+        )
+
+        req = await self.req_repo.find_by_id(requirement_id)
+
+        req["id"] = str(req["_id"])
+
+        return req
+    
+    async def request_changes(
+        self,
+        requirement_id: str,
+        remarks: str
+    ) -> dict:
+
+        req = await self.req_repo.find_by_id(requirement_id)
+
+        if not req:
+            raise ResourceNotFoundException("Requirement")
+
+        await self.req_repo.update(
+            requirement_id,
+            {
+                "status": "CHANGES_REQUESTED",
+                "remarks": remarks
+            }
+        )
+
+        req = await self.req_repo.find_by_id(requirement_id)
+
+        req["id"] = str(req["_id"])
+
+        return req
 
 
 class QuotationService:
@@ -492,11 +650,29 @@ class QuotationService:
         self.quotation_repo = QuotationRepository()
         self.notification_repo = NotificationRepository()
         self.activity_repo = ActivityLogRepository()
+        self.req_repo = RequirementRepository()
     
     async def create_quotation(self, client_id: str, services: list, items: list, 
                                timeline: str, validity: int, terms: str,
                                lead_id: str = None, project_id: str = None, notes: str = None) -> dict:
         """Create new quotation"""
+        requirement = None
+
+        if lead_id:
+            requirement = await self.req_repo.find_by_lead(lead_id)
+
+        elif project_id:
+            requirement = await self.req_repo.find_by_project(project_id)
+
+        if not requirement:
+            raise ValidationException(
+                "Requirement must be created before creating quotation."
+            )
+
+        if requirement.get("status") != "APPROVED":
+            raise ValidationException(
+                "Requirement must be approved before quotation can be created."
+            )
         total_amount = sum(item.get("total", 0) for item in items)
         
         quotation_data = {

@@ -1,15 +1,16 @@
 from fastapi import APIRouter, HTTPException
 from datetime import datetime
-from bson import ObjectId
 
 from app.db.database import db
 from app.db.schemas import (
     ContactFormCreate, ContactFormOut,
     NewsletterSignup, NewsletterOut
 )
-from app.services.email import send_contact_alert
+from app.services.service_layer import ContactService
+from app.exceptions import exception_to_http
 
 contact_router = APIRouter()
+contact_service = ContactService()
 
 
 # ───────────────────────────────
@@ -35,17 +36,15 @@ async def signup_newsletter(payload: NewsletterSignup):
 # ───────────────────────────────
 @contact_router.post("/contact", response_model=ContactFormOut)
 async def submit_contact_form(form: ContactFormCreate):
-    doc = {
-        "name": form.name,
-        "email": form.email,
-        "message": form.message,
-        "submittedAt": datetime.utcnow()
-    }
-    result = await db.contact_forms.insert_one(doc)
-    doc["id"] = str(result.inserted_id)
+    try:
+        result = await contact_service.submit_contact_form(
+            name=form.name,
+            email=form.email,
+            message=form.message
+        )
 
-    # ✅ Send email alert
-    send_contact_alert(form.name, form.email, form.message)
+        return ContactFormOut(**result)
 
-    return ContactFormOut(**doc)
+    except Exception as exc:
+        raise exception_to_http(exc)
 
