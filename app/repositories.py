@@ -277,6 +277,24 @@ class QuotationRepository(BaseRepository):
         """Get all quotations sorted by creation date"""
         cursor = self.collection.find().sort("createdAt", -1).skip(skip).limit(limit)
         return [doc async for doc in cursor]
+    
+    async def find_by_lead(self, lead_id: str) -> Optional[Dict]:
+        """Find quotation by lead"""
+        return await self.find_one({
+            "leadId": lead_id
+        })
+    
+    async def exists_accepted(self, quotation_id: str) -> bool:
+        """Check if quotation is already accepted"""
+
+        quotation = await self.find_by_id(quotation_id)
+
+        return (
+            quotation is not None
+            and quotation.get("status") == "Accepted"
+        )
+    
+    
 
 
 class TimelineRepository(BaseRepository):

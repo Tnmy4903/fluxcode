@@ -118,29 +118,70 @@ class ProjectService:
         self.project_repo = ProjectRepository()
         self.user_repo = UserRepository()
     
-    async def create_project(self, user_id: str, title: str, description: str, deadline, budget: float) -> dict:
+    async def create_project_internal(self,client_id: str,quotation_id: str,lead_id: str,title: str,description: str,deadline,budget: float,assigned_admin: str = None,assigned_sub_admin: str = None) -> dict:
         """Create new project"""
         project_data = {
-            "userId": user_id,
+            "userId": client_id,
+            "quotationId": quotation_id,
+            "leadId": lead_id,
             "title": title,
             "description": description,
             "deadline": deadline,
             "budget": budget,
+            "assignedAdmin": assigned_admin,
+            "assignedSubAdmin": assigned_sub_admin,
             "status": "pending"
         }
         
         project_id = await self.project_repo.create(project_data)
-        logger_project.info(f"Project created: {project_id} by user {user_id}")
+        logger_project.info(f"Project created: {project_id} by user {client_id} of quotation {quotation_id} and lead {lead_id}")
         
         return {
             "id": project_id,
-            "userId": user_id,
+            "userId": client_id,
+            "quotationId": quotation_id,
+            "leadId": lead_id,
+            "assignedAdmin": assigned_admin,
+            "assignedSubAdmin": assigned_sub_admin,
+            "status": "pending",
             "title": title,
             "description": description,
             "deadline": deadline,
             "budget": budget,
+        }
+    
+    async def create_project_from_quotation(
+        self,
+        quotation: dict
+    ) -> dict:
+        """
+        Auto create project after quotation acceptance
+        """
+
+        # Prevent duplicate project
+        existing = await self.project_repo.find_one({
+            "quotationId": quotation["id"]
+        })
+
+        if existing:
+            existing["id"] = str(existing["_id"])
+            return existing
+
+        project_data = {
+            "quotationId": quotation["id"],
+            "leadId": quotation.get("leadId"),
+            "clientId": quotation["clientId"],
+            "title": quotation["services"][0] if quotation.get("services") else "New Project",
+            "description": quotation.get("notes"),
+            "budget": quotation["totalAmount"],
             "status": "pending"
         }
+
+        project_id = await self.project_repo.create(project_data)
+
+        project_data["id"] = project_id
+
+        return project_data
     
     async def update_status(self, project_id: str, status: str) -> bool:
         """Update project status"""
@@ -520,6 +561,42 @@ class LeadService:
         updated_lead["id"] = str(updated_lead["_id"])
         
         return updated_lead
+    
+    async def mark_lead_as_won(
+        self,
+        lead_id: str,
+        user_id: str
+    ) -> dict:
+        """Mark lead as won after quotation acceptance"""
+
+        lead = await self.lead_repo.find_by_id(lead_id)
+
+        if not lead:
+            raise ResourceNotFoundException("Lead")
+
+        # Add history
+        await self.lead_repo.add_history_entry(
+            lead_id,
+            {
+                "field": "stage",
+                "oldValue": lead.get("stage"),
+                "newValue": "Won",
+                "changedBy": user_id
+            }
+        )
+
+        # Update stage
+        await self.lead_repo.update(
+            lead_id,
+            {
+                "stage": "Won"
+            }
+        )
+
+        updated = await self.lead_repo.find_by_id(lead_id)
+        updated["id"] = str(updated["_id"])
+
+        return updated
 
 
 class RequirementService:
@@ -648,9 +725,16 @@ class QuotationService:
     
     def __init__(self):
         self.quotation_repo = QuotationRepository()
+        self.notification_service = NotificationService()
+        self.user_repo = UserRepository()
         self.notification_repo = NotificationRepository()
         self.activity_repo = ActivityLogRepository()
         self.req_repo = RequirementRepository()
+        self.project_service = ProjectService()
+        self.lead_service = LeadService()
+        self.timeline_service = TimelineService()
+        self.discussion_service = DiscussionService()
+        self.activity_service = ActivityLogService()
     
     async def create_quotation(self, client_id: str, services: list, items: list, 
                                timeline: str, validity: int, terms: str,
@@ -715,6 +799,112 @@ class QuotationService:
     async def send_quotation(self, quotation_id: str) -> dict:
         """Mark quotation as sent"""
         return await self.update_quotation_status(quotation_id, "Sent")
+    
+    async def accept_quotation(
+        self,
+        quotation_id: str,
+        user_id: str
+    ):
+        """
+        Accept quotation and start project workflow
+        """
+
+        quotation = await self.quotation_repo.find_by_id(quotation_id)
+
+        if not quotation:
+            raise ResourceNotFoundException("Quotation")
+
+        if quotation.get("status") == "Accepted":
+            raise PermissionException("Quotation already accepted")
+
+        # Requirement Approval Check
+        if quotation.get("leadId"):
+
+            requirement = await self.req_repo.find_by_lead(
+                quotation["leadId"]
+            )
+
+            if not requirement:
+                raise PermissionException(
+                    "Requirement not found"
+                )
+
+            if requirement.get("status") != "Approved":
+                raise PermissionException(
+                    "Requirement must be approved before accepting quotation."
+                )
+
+        # Update quotation status
+
+        await self.quotation_repo.update(
+            quotation_id,
+            {
+                "status": "Accepted"
+            }
+        )
+
+        quotation = await self.quotation_repo.find_by_id(
+            quotation_id
+        )
+
+        quotation["id"] = str(
+            quotation["_id"]
+        )
+
+        # Mark Lead as Won
+        if quotation.get("leadId"):
+            await self.lead_service.mark_lead_as_won(
+                quotation["leadId"],
+                user_id
+            )
+
+        # Create Project
+        project = await self.project_service.create_project_from_quotation(
+            quotation
+        )
+
+        # Initialize default timeline
+        await self.timeline_service.initialize_project_timeline(
+            project_id=project["id"],
+            created_by=user_id
+        )
+
+        # Initialize project discussion
+        await self.discussion_service.initialize_project_discussion(
+            project_id=project["id"],
+            created_by=user_id
+        )
+
+        # Log activity
+        await self.activity_service.log_activity(
+            user_id=user_id,
+            user_role="client",
+            action="Quotation Accepted",
+            entity="Quotation",
+            entity_id=quotation_id,
+            details={
+                "projectId": project["id"]
+            }
+        )
+
+        # Notify Super Admin(s)
+        admins = await self.user_repo.get_by_role("super_admin")
+
+        for admin in admins:
+            await self.notification_service.create_notification(
+                user_id=str(admin["_id"]),
+                notif_type="quotation",
+                title="Quotation Accepted",
+                message=f"Quotation {quotation['quotationNumber']} has been accepted.",
+                entity_id=quotation_id,
+                entity_type="Quotation"
+            )
+
+        return {
+            "quotation": quotation,
+            "project": project
+        }
+
 
 
 class TimelineService:
@@ -746,6 +936,27 @@ class TimelineService:
         for event in events:
             event["id"] = str(event["_id"])
         return events
+    
+    async def initialize_project_timeline(
+        self,
+        project_id: str,
+        created_by: str
+    ):
+        """Initialize default timeline for newly created project"""
+
+        await self.add_timeline_event(
+            project_id=project_id,
+            title="Project Created",
+            description="Project created after quotation acceptance.",
+            created_by=created_by
+        )
+
+        await self.add_timeline_event(
+            project_id=project_id,
+            title="Project Started",
+            description="Project has entered development workflow.",
+            created_by=created_by
+        )
 
 
 class DiscussionService:
@@ -797,6 +1008,20 @@ class DiscussionService:
         for msg in messages:
             msg["id"] = str(msg["_id"])
         return messages
+    
+    async def initialize_project_discussion(
+        self,
+        project_id: str,
+        created_by: str = "system"
+    ):
+        """Initialize discussion thread for new project"""
+
+        await self.add_message(
+            project_id=project_id,
+            author_id=created_by,
+            author_name="System",
+            message="Project discussion has been initialized. All future communication regarding this project will happen here."
+        )
 
 
 class DeliverablesService:

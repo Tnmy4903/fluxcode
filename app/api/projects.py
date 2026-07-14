@@ -5,36 +5,11 @@ from pydantic import BaseModel
 from bson import ObjectId
 
 from app.db.database import db
-from app.db.schemas import ProjectCreate, ProjectOut, InvoiceOut
+from app.db.schemas import ProjectOut, InvoiceOut
 from app.api.auth import get_current_user
 
 project_router = APIRouter()
 invoice_router = APIRouter()
-
-
-# ───────────────────────────────
-# 📦 Client: Create Project
-# ───────────────────────────────
-@project_router.post("/", response_model=ProjectOut)
-async def create_project(project: ProjectCreate, current_user: dict = Depends(get_current_user)):
-    if current_user["role"] != "client":
-        raise HTTPException(status_code=403, detail="Only clients can submit projects")
-
-    new_project = {
-        "userId": ObjectId(current_user["id"]),
-        "title": project.title,
-        "description": project.description,
-        "status": "pending",
-        "deadline": datetime.combine(project.deadline, datetime.min.time()) if project.deadline else None,
-        "budget": project.budget,
-        "createdAt": datetime.utcnow(),
-        "updatedAt": datetime.utcnow()
-    }
-
-    result = await db.projects.insert_one(new_project)
-    new_project["id"] = str(result.inserted_id)
-    new_project["userId"] = str(new_project["userId"])
-    return ProjectOut(**new_project)
 
 
 # ───────────────────────────────

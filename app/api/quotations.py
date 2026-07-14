@@ -164,19 +164,7 @@ async def accept_quotation(quotation_id: str, current_user: dict = Depends(get_c
         if str(quotation["clientId"]) != current_user["id"]:
             raise HTTPException(status_code=403, detail="Access denied")
         
-        result = await quotation_service.update_quotation_status(quotation_id, "Accepted", current_user["id"])
-        
-        # Notify admins
-        from app.repositories import UserRepository
-        user_repo = UserRepository()
-        admins = await user_repo.get_by_role("super_admin")
-        for admin in admins:
-            await notification_service.create_notification(
-                str(admin["_id"]), "quotation_accepted",
-                "Quotation Accepted", f"Quotation {quotation['quotationNumber']} has been accepted",
-                quotation_id, "Quotation"
-            )
-        
+        result = await quotation_service.accept_quotation(quotation_id, current_user["id"])
         logger_project.info(f"Quotation accepted: {quotation['quotationNumber']}")
         return result
     except Exception as e:
