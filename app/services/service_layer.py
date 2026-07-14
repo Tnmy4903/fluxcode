@@ -185,9 +185,30 @@ class ProjectService:
     
     async def update_status(self, project_id: str, status: str) -> bool:
         """Update project status"""
-        valid_statuses = ["pending", "accepted", "in_progress", "delivered"]
-        if status not in valid_statuses:
-            raise PermissionException(f"invalid status. Must be: {', '.join(valid_statuses)}")
+        valid_transitions = {
+            "pending": ["in_progress"],
+            "in_progress": ["testing"],
+            "testing": ["deployment"],
+            "deployment": ["delivered"],
+            "delivered": ["completed"],
+            "completed": []
+        }
+
+        current = await self.project_repo.find_by_id(project_id)
+
+        if not current:
+            raise ResourceNotFoundException("Project")
+
+        current_status = current.get("status", "pending")
+
+        if status not in valid_transitions:
+            raise ValidationException("Invalid project status")
+
+        if status not in valid_transitions[current_status]:
+            raise ValidationException(
+                f"Cannot change project status from "
+                f"{current_status} to {status}"
+            )    
         
         updated = await self.project_repo.update(project_id, {"status": status})
         
@@ -213,10 +234,29 @@ class InvoiceService:
         self.invoice_repo = InvoiceRepository()
         self.project_repo = ProjectRepository()
         self.user_repo = UserRepository()
+        self.deliverables_repo = DeliverablesRepository()
+        self.activity_service = ActivityLogService()
+        self.notification_service = NotificationService()
+        self.project_service = ProjectService()
     
     async def generate_invoice(self, project_id: str) -> dict:
         """Generate invoice PDF"""
         project = await self.project_repo.find_by_id(project_id)
+        # Validate deliverables
+        deliverables = await self.deliverables_repo.find_by_project(project_id)
+
+        if not deliverables:
+            raise ValidationException(
+                "Deliverables must be created before generating invoice."
+            )
+
+        # Prevent duplicate invoice
+        existing_invoice = await self.invoice_repo.find_by_project(project_id)
+
+        if existing_invoice:
+            raise ValidationException(
+                "Invoice already exists for this project."
+            )
         if not project:
             raise ResourceNotFoundException("Project")
         
@@ -252,6 +292,31 @@ class InvoiceService:
         }
         
         invoice_id = await self.invoice_repo.create(invoice_db_data)
+
+        # Activity Log
+        await self.activity_service.log_activity(
+            user_id="system",
+            user_role="system",
+            action="Invoice Generated",
+            entity="Invoice",
+            entity_id=invoice_id,
+            details={
+                "projectId": project_id
+            }
+        )
+
+        # Notify Super Admin(s)
+        admins = await self.user_repo.get_by_role("super_admin")
+
+        for admin in admins:
+            await self.notification_service.create_notification(
+                user_id=str(admin["_id"]),
+                notif_type="invoice",
+                title="Invoice Generated",
+                message=f"Invoice generated for project {project['title']}.",
+                entity_id=invoice_id,
+                entity_type="Invoice"
+            )
         
         logger_project.info(f"Invoice generated: {invoice_id} for project {project_id}")
         
@@ -298,12 +363,46 @@ Tanmay (FluxCode)
     
     async def update_payment_status(self, invoice_id: str, is_paid: bool) -> bool:
         """Update invoice payment status"""
-        updated = await self.invoice_repo.update(invoice_id, {"isPaid": is_paid})
-        
+
+        invoice = await self.invoice_repo.find_by_id(invoice_id)
+
+        if not invoice:
+            raise ResourceNotFoundException("Invoice")
+
+        updated = await self.invoice_repo.update(
+            invoice_id,
+            {
+                "isPaid": is_paid
+            }
+        )
+
         if updated:
+
             status_str = "paid" if is_paid else "unpaid"
-            logger_project.info(f"Invoice {invoice_id} marked as {status_str}")
-        
+
+            logger_project.info(
+                f"Invoice {invoice_id} marked as {status_str}"
+            )
+
+            # Complete project after successful payment
+            if is_paid:
+
+                await self.project_service.update_status(
+                    project_id=str(invoice["projectId"]),
+                    status="completed"
+                )
+
+                await self.activity_service.log_activity(
+                    user_id="system",
+                    user_role="system",
+                    action="Invoice Paid",
+                    entity="Invoice",
+                    entity_id=invoice_id,
+                    details={
+                        "projectId": str(invoice["projectId"])
+                    }
+                )
+
         return updated
 
 
@@ -598,12 +697,48 @@ class LeadService:
 
         return updated
 
+    async def mark_lead_as_lost(
+        self,
+        lead_id: str,
+        user_id: str
+    ) -> dict:
+        """Mark lead as lost after quotation rejection"""
+
+        lead = await self.lead_repo.find_by_id(lead_id)
+
+        if not lead:
+            raise ResourceNotFoundException("Lead")
+
+        await self.lead_repo.add_history_entry(
+            lead_id,
+            {
+                "field": "stage",
+                "oldValue": lead.get("stage"),
+                "newValue": "Lost",
+                "changedBy": user_id
+            }
+        )
+
+        await self.lead_repo.update(
+            lead_id,
+            {
+                "stage": "Lost"
+            }
+        )
+
+        updated = await self.lead_repo.find_by_id(lead_id)
+        updated["id"] = str(updated["_id"])
+
+        return updated
+
 
 class RequirementService:
     """Requirements documentation service"""
     
     def __init__(self):
         self.req_repo = RequirementRepository()
+        self.lead_repo = LeadRepository()
+        self.project_repo = ProjectRepository()
     
     async def create_requirement(
         self,
@@ -616,6 +751,22 @@ class RequirementService:
 
         if not lead_id and not project_id:
             raise PermissionException("Either lead_id or project_id must be provided")
+        
+        # Validate Lead
+        if lead_id:
+
+            lead = await self.lead_repo.find_by_id(lead_id)
+
+            if not lead:
+                raise ResourceNotFoundException("Lead")
+
+        # Validate Project
+        if project_id:
+
+            project = await self.project_repo.find_by_id(project_id)
+
+            if not project:
+                raise ResourceNotFoundException("Project")
 
         req_data["leadId"] = lead_id
         req_data["projectId"] = project_id
@@ -724,6 +875,8 @@ class QuotationService:
     """Quotation management service"""
     
     def __init__(self):
+        self.lead_repo = LeadRepository()
+        self.project_repo = ProjectRepository()
         self.quotation_repo = QuotationRepository()
         self.notification_service = NotificationService()
         self.user_repo = UserRepository()
@@ -740,6 +893,28 @@ class QuotationService:
                                timeline: str, validity: int, terms: str,
                                lead_id: str = None, project_id: str = None, notes: str = None) -> dict:
         """Create new quotation"""
+        # Validate Client
+        client = await self.user_repo.find_by_id(client_id)
+
+        if not client:
+            raise ResourceNotFoundException("Client")
+
+        # Validate Lead
+        if lead_id:
+
+            lead = await self.lead_repo.find_by_id(lead_id)
+
+            if not lead:
+                raise ResourceNotFoundException("Lead")
+
+        # Validate Project
+        if project_id:
+
+            project = await self.project_repo.find_by_id(project_id)
+
+            if not project:
+                raise ResourceNotFoundException("Project")
+            
         requirement = None
 
         if lead_id:
@@ -790,6 +965,22 @@ class QuotationService:
             raise ResourceNotFoundException("Quotation")
         
         await self.quotation_repo.update(quotation_id, {"status": status})
+        # Business workflow
+        if quotation.get("leadId"):
+
+            if status == "Accepted":
+
+                await self.lead_service.mark_lead_as_won(
+                    quotation["leadId"],
+                    user_id or "system"
+                )
+
+            elif status == "Rejected":
+
+                await self.lead_service.mark_lead_as_lost(
+                    quotation["leadId"],
+                    user_id or "system"
+                )
         
         updated = await self.quotation_repo.find_by_id(quotation_id)
         updated["id"] = str(updated["_id"])
@@ -836,27 +1027,12 @@ class QuotationService:
 
         # Update quotation status
 
-        await self.quotation_repo.update(
-            quotation_id,
-            {
-                "status": "Accepted"
-            }
+        # Update quotation status and trigger business workflow
+        quotation = await self.update_quotation_status(
+            quotation_id=quotation_id,
+            status="Accepted",
+            user_id=user_id
         )
-
-        quotation = await self.quotation_repo.find_by_id(
-            quotation_id
-        )
-
-        quotation["id"] = str(
-            quotation["_id"]
-        )
-
-        # Mark Lead as Won
-        if quotation.get("leadId"):
-            await self.lead_service.mark_lead_as_won(
-                quotation["leadId"],
-                user_id
-            )
 
         # Create Project
         project = await self.project_service.create_project_from_quotation(
@@ -913,6 +1089,7 @@ class TimelineService:
     def __init__(self):
         self.timeline_repo = TimelineRepository()
         self.activity_repo = ActivityLogRepository()
+        self.project_service = ProjectService()
     
     async def add_timeline_event(self, project_id: str, title: str, created_by: str, 
                                  description: str = None) -> dict:
@@ -927,6 +1104,23 @@ class TimelineService:
         event_id = await self.timeline_repo.create(event_data)
         event_data["id"] = event_id
         event_data["timestamp"] = datetime.utcnow()
+
+        # Synchronize project status from timeline
+        title = title.lower()
+
+        status_mapping = {
+            "project started": "in_progress",
+            "testing started": "testing",
+            "deployment started": "deployment",
+            "project delivered": "delivered",
+            "project completed": "completed"
+        }
+
+        if title in status_mapping:
+            await self.project_service.update_status(
+                project_id,
+                status_mapping[title]
+            )
         
         return event_data
     
@@ -1029,13 +1223,60 @@ class DeliverablesService:
     
     def __init__(self):
         self.deliverables_repo = DeliverablesRepository()
+        self.project_repo = ProjectRepository()
+        self.activity_service = ActivityLogService()
+        self.notification_service = NotificationService()
+        self.user_repo = UserRepository()
     
     async def create_deliverables(self, project_id: str, **deliverables_data) -> dict:
         """Create deliverables for project"""
+        project = await self.project_repo.find_by_id(project_id)
+
+        if not project:
+            raise ResourceNotFoundException("Project")
+
+        # Project must be active
+        if project.get("status") not in ["in_progress", "testing", "deployment"]:
+            raise ValidationException(
+                "Deliverables can only be created for active projects."
+            )
+
+        # Prevent duplicate deliverables
+        existing = await self.deliverables_repo.find_by_project(project_id)
+
+        if existing:
+            raise ValidationException(
+                "Deliverables already exist for this project."
+            )
+        
         deliverables_data["projectId"] = project_id
         
         del_id = await self.deliverables_repo.create(deliverables_data)
         deliverables_data["id"] = del_id
+
+        await self.activity_service.log_activity(
+            user_id="system",
+            user_role="system",
+            action="Deliverables Created",
+            entity="Deliverables",
+            entity_id=del_id,
+            details={
+                "projectId": project_id
+            }
+        )
+
+        # Notify Super Admin(s)
+        admins = await self.user_repo.get_by_role("super_admin")
+
+        for admin in admins:
+            await self.notification_service.create_notification(
+                user_id=str(admin["_id"]),
+                notif_type="deliverables",
+                title="Deliverables Created",
+                message=f"Deliverables created for project {project_id}.",
+                entity_id=del_id,
+                entity_type="Deliverables"
+            )
         
         return deliverables_data
     
