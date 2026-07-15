@@ -1,21 +1,18 @@
 """
 Service layer for business logic
 """
-from datetime import datetime, date
+from datetime import datetime
 from uuid import uuid4
 from pathlib import Path
 
 from app.repositories import (
-    UserRepository, ProjectRepository, InvoiceRepository,
-    UploadRepository, BlogRepository, ContactRepository, NewsletterRepository,
-    LeadRepository, RequirementRepository, QuotationRepository, TimelineRepository,
-    DiscussionRepository, DeliverablesRepository, ActivityLogRepository,
+    UserRepository, ProjectRepository, InvoiceRepository, BlogRepository, ContactRepository, NewsletterRepository,
+    LeadRepository, RequirementRepository, QuotationRepository, TimelineRepository, DiscussionRepository, DeliverablesRepository, ActivityLogRepository,
     NotificationRepository, PortfolioRepository, WebsiteContentRepository
 )
 from app.db.models import hash_password, verify_password
 from app.exceptions import (
-    AuthenticationException, AuthorizationException, 
-    ResourceNotFoundException, DuplicateException, PermissionException, ValidationException
+    AuthenticationException, ResourceNotFoundException, DuplicateException, PermissionException, ValidationException
 )
 from app.logger import logger_auth, logger_project, logger_blog
 from app.services.email import send_contact_alert, send_invoice_email, send_mass_email
@@ -839,6 +836,28 @@ class RequirementService:
             }
         )
 
+        # Mark quotation for revision
+        quotation = None
+
+        if req.get("leadId"):
+            quotation = await self.quotation_repo.find_one({
+                "leadId": req["leadId"]
+            })
+
+        elif req.get("projectId"):
+            quotation = await self.quotation_repo.find_one({
+                "projectId": req["projectId"]
+            })
+
+        if quotation:
+
+            await self.quotation_repo.update(
+                str(quotation["_id"]),
+                {
+                    "status": "Revision Requested"
+                }
+            )
+
         req = await self.req_repo.find_by_id(requirement_id)
 
         req["id"] = str(req["_id"])
@@ -883,6 +902,7 @@ class QuotationService:
         self.notification_repo = NotificationRepository()
         self.activity_repo = ActivityLogRepository()
         self.req_repo = RequirementRepository()
+        self.quotation_repo = QuotationRepository()
         self.project_service = ProjectService()
         self.lead_service = LeadService()
         self.timeline_service = TimelineService()
@@ -946,8 +966,12 @@ class QuotationService:
             "terms": terms,
             "notes": notes,
             "status": "Draft",
-            "totalAmount": total_amount
-        }
+            "totalAmount": total_amount,
+            # Revision tracking
+            "revisionCount": 0,
+            "lastRevisedBy": None,
+            "lastRevisedAt": None
+            }
         
         quotation_id = await self.quotation_repo.create(quotation_data)
         quotation_data["id"] = quotation_id
@@ -985,6 +1009,76 @@ class QuotationService:
         updated = await self.quotation_repo.find_by_id(quotation_id)
         updated["id"] = str(updated["_id"])
         
+        return updated
+    
+    async def update_quotation(
+        self,
+        quotation_id: str,
+        revised_by: str,
+        **updates
+    ) -> dict:
+        """
+        Update existing quotation after requirement revision
+        """
+
+        quotation = await self.quotation_repo.find_by_id(quotation_id)
+
+        if not quotation:
+            raise ResourceNotFoundException("Quotation")
+
+        # Accepted quotation cannot be revised
+        if quotation.get("status") == "Accepted":
+            raise ValidationException(
+                "Accepted quotation cannot be revised."
+            )
+        
+        # Rejected quotation cannot be revised
+        if quotation.get("status") == "Rejected":
+            raise ValidationException(
+                "Rejected quotation cannot be revised."
+            )
+
+        # Recalculate total amount if items updated
+        if "items" in updates:
+
+            updates["totalAmount"] = sum(
+                item.get("total", 0)
+                for item in updates["items"]
+            )
+
+        updates["status"] = "Draft"
+
+        updates["revisionCount"] = quotation.get(
+            "revisionCount",
+            0
+        ) + 1
+
+        updates["lastRevisedBy"] = revised_by
+
+        updates["lastRevisedAt"] = datetime.utcnow()
+
+        await self.quotation_repo.update(
+            quotation_id,
+            updates
+        )
+
+        updated = await self.quotation_repo.find_by_id(
+            quotation_id
+        )
+
+        updated["id"] = str(updated["_id"])
+
+        await self.activity_service.log_activity(
+            user_id=revised_by,
+            user_role="admin",
+            action="Quotation Revised",
+            entity="Quotation",
+            entity_id=quotation_id,
+            details={
+                "revisionCount": updated.get("revisionCount", 0)
+            }
+        )
+
         return updated
     
     async def send_quotation(self, quotation_id: str) -> dict:

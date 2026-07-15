@@ -104,26 +104,19 @@ async def update_quotation(quotation_id: str, updates: QuotationUpdate, current_
             raise HTTPException(status_code=404, detail="Quotation not found")
         
         update_dict = updates.dict(exclude_unset=True)
+
         if "items" in update_dict:
             update_dict["items"] = [item.dict() for item in update_dict["items"]]
-        
-        result = await quotation_service.quotation_repo.update(quotation_id, update_dict)
-        
-        if result:
-            updated = await quotation_service.quotation_repo.find_by_id(quotation_id)
-            updated["id"] = str(updated["_id"])
-            
-            await activity_service.log_activity(
-                current_user["id"], current_user["role"],
-                "Quotation Updated", "Quotation", quotation_id
-            )
-            
-            return updated
-        else:
-            raise HTTPException(status_code=400, detail="Update failed")
+
+        result = await quotation_service.update_quotation(
+            quotation_id=quotation_id,
+            revised_by=current_user["id"],
+            **update_dict
+        )
+
+        return result
     except Exception as e:
         raise exception_to_http(e)
-
 
 @quotation_router.post("/quotations/{quotation_id}/send", response_model=dict)
 async def send_quotation(quotation_id: str, current_user: dict = Depends(get_current_user)):

@@ -237,6 +237,9 @@ class QuotationUpdate(BaseModel):
     validity: Optional[int] = None
     terms: Optional[str] = None
     notes: Optional[str] = None
+    revisionCount: Optional[int] = None
+    lastRevisedBy: Optional[str] = None
+    lastRevisedAt: Optional[datetime] = None
 
 class QuotationOut(QuotationCreate):
     id: str
@@ -245,6 +248,9 @@ class QuotationOut(QuotationCreate):
     totalAmount: float
     createdAt: datetime
     updatedAt: datetime
+    revisionCount: int
+    lastRevisedBy: Optional[str] = None
+    lastRevisedAt: Optional[datetime] = None
 
 # ───────────────────────────────
 # 📅 Timeline Event Schemas
