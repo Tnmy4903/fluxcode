@@ -54,9 +54,23 @@ class DuplicateException(AppException):
 
 class PermissionException(AppException):
     """User lacks required permission"""
-    def __init__(self, permission: str = "permission"):
-        msg = f"User lacks {permission} permission"
-        super().__init__(msg, status.HTTP_403_FORBIDDEN, "PERMISSION_DENIED")
+
+    def __init__(
+        self,
+        permission: str = None,
+        message: str = None
+    ):
+
+        if message:
+            msg = message
+        else:
+            msg = f"User lacks {permission} permission"
+
+        super().__init__(
+            msg,
+            status.HTTP_403_FORBIDDEN,
+            "PERMISSION_DENIED"
+        )
 
 
 def exception_to_http(exc: AppException) -> HTTPException:

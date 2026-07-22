@@ -1,277 +1,79 @@
-from fastapi import APIRouter, Depends, HTTPException
-from typing import List, Optional
-from pydantic import BaseModel
-from datetime import datetime
-from bson import ObjectId
-from uuid import uuid4
-from pathlib import Path
-import os
+from fastapi import APIRouter, Depends, Query
 
 from app.api.auth import get_current_user
-from app.db.database import db
-from app.db.schemas import (
-    ProjectOut, FileUploadOut, InvoiceOut
-)
-from app.services.invoice_generator import generate_invoice_pdf
-from app.services.email import send_invoice_email
+from app.services.admin_service import AdminService
+from app.core.exceptions import AuthenticationException
 
 admin_router = APIRouter()
 
+admin_service = AdminService()
 
-# ───────────────────────────────
-# 🧠 Admin Welcome Route (Super Admin Only)
-# ───────────────────────────────
+
+# ------------------------------------------------------------------
+# Helper
+# ------------------------------------------------------------------
+
+def require_admin(current_user: dict):
+    """
+    Allow only Super Admin and Sub Admin.
+    """
+    if current_user.get("role") not in ["super_admin", "sub_admin"]:
+        raise AuthenticationException("Admin access only")
+
+
+# ------------------------------------------------------------------
+# Dashboard
+# ------------------------------------------------------------------
+
 @admin_router.get("/dashboard")
-async def admin_dashboard(current_user: dict = Depends(get_current_user)):
-    if current_user["role"] not in ["super_admin", "sub_admin"]:
-        raise HTTPException(status_code=403, detail="Admin access only")
-    
-    role_display = "Super Admin" if current_user["role"] == "super_admin" else "Sub-Admin"
-    return {
-        "message": f"Welcome {role_display} {current_user['name']}",
-        "role": current_user["role"]
-    }
+async def admin_dashboard(
+    current_user: dict = Depends(get_current_user)
+):
+    require_admin(current_user)
+
+    return await admin_service.get_dashboard(current_user)
 
 
-# ───────────────────────────────
-# 📁 Project Management
-# ───────────────────────────────
-@admin_router.get("/projects", response_model=List[ProjectOut])
-async def get_all_projects(current_user: dict = Depends(get_current_user)):
-    if current_user["role"] not in ["super_admin", "sub_admin"]:
-        raise HTTPException(status_code=403, detail="Admin access only")
+# ------------------------------------------------------------------
+# Summary
+# ------------------------------------------------------------------
 
-    cursor = db.projects.find().sort("createdAt", -1)
-    projects = []
-    async for proj in cursor:
-        proj["id"] = str(proj["_id"])
-        proj["userId"] = str(proj["userId"])
-        projects.append(ProjectOut(**proj))
-    return projects
-
-
-class StatusUpdate(BaseModel):
-    status: str  # expected: pending, accepted, in_progress, delivered
-
-
-@admin_router.patch("/projects/{id}/status")
-async def update_project_status(id: str, payload: StatusUpdate, current_user: dict = Depends(get_current_user)):
-    # Only super_admin can update status
-    if current_user["role"] != "super_admin":
-        raise HTTPException(status_code=403, detail="Only Super Admin can update project status")
-
-    if payload.status not in ["pending", "accepted", "in_progress", "delivered"]:
-        raise HTTPException(status_code=400, detail="Invalid status")
-
-    result = await db.projects.update_one(
-        {"_id": ObjectId(id)},
-        {"$set": {"status": payload.status, "updatedAt": datetime.utcnow()}}
-    )
-    if result.modified_count == 0:
-        raise HTTPException(status_code=404, detail="Project not found or already set")
-
-    return {"message": "Status updated successfully", "newStatus": payload.status}
-
-
-class BudgetUpdate(BaseModel):
-    budget: float
-
-
-@admin_router.patch("/projects/{id}/budget")
-async def update_project_budget(id: str, payload: BudgetUpdate, current_user: dict = Depends(get_current_user)):
-    # Only super_admin can update budget/price
-    if current_user["role"] != "super_admin":
-        raise HTTPException(status_code=403, detail="Only Super Admin can set project budget/price")
-
-    result = await db.projects.update_one(
-        {"_id": ObjectId(id)},
-        {"$set": {"budget": payload.budget, "updatedAt": datetime.utcnow()}}
-    )
-
-    if result.modified_count == 0:
-        raise HTTPException(status_code=404, detail="Project not found or no update made")
-
-    return {"message": "Budget updated successfully", "newBudget": payload.budget}
-
-
-# ───────────────────────────────
-# 🧾 Invoice Generation (Super Admin Only)
-# ───────────────────────────────
-@admin_router.post("/projects/{id}/invoice", response_model=InvoiceOut)
-async def generate_invoice(id: str, current_user: dict = Depends(get_current_user)):
-    # Only super_admin can generate invoices
-    if current_user["role"] != "super_admin":
-        raise HTTPException(status_code=403, detail="Only Super Admin can generate invoices")
-
-    project = await db.projects.find_one({"_id": ObjectId(id)})
-    if not project:
-        raise HTTPException(status_code=404, detail="Project not found")
-
-    user = await db.users.find_one({"_id": project["userId"]})
-    if not user:
-        raise HTTPException(status_code=404, detail="Client not found")
-
-    now = datetime.utcnow()
-    invoice_data = {
-        "client_name": user["name"],
-        "client_email": user["email"],
-        "title": project["title"],
-        "description": project["description"],
-        "status": project["status"],
-        "amount": project["budget"] or 0.0,
-        "currency": "INR",
-        "invoice_number": f"INV-{uuid4().hex[:8].upper()}",
-        "deadline": project["deadline"].strftime("%Y-%m-%d") if project.get("deadline") else "N/A",
-        "generated_on": now.strftime("%Y-%m-%d"),
-    }
-
-    path = Path("app/uploads/invoices")
-    pdf_path = generate_invoice_pdf(invoice_data, path)
-
-    doc = {
-        "projectId": project["_id"],
-        "fileUrl": str(pdf_path),
-        "amount": invoice_data["amount"],
-        "invoiceNumber": invoice_data["invoice_number"],
-        "isPaid": False,
-        "currency": invoice_data["currency"],
-        "generatedOn": now
-    }
-
-    result = await db.invoices.insert_one(doc)
-
-    doc["id"] = str(result.inserted_id)
-    doc["projectId"] = str(doc["projectId"])
-    return InvoiceOut(**doc)
-
-
-# ───────────────────────────────
-# 📂 Admin Upload Manager (View: All Admins, Delete: Super Admin Only)
-# ───────────────────────────────
-@admin_router.get("/uploads", response_model=List[FileUploadOut])
-async def list_all_uploads(current_user: dict = Depends(get_current_user)):
-    if current_user["role"] not in ["super_admin", "sub_admin"]:
-        raise HTTPException(status_code=403, detail="Admin access only")
-
-    cursor = db.uploads.find().sort("uploadedAt", -1)
-    results = []
-    async for doc in cursor:
-        doc["id"] = str(doc["_id"])
-        doc["userId"] = str(doc["userId"])
-        doc["projectId"] = str(doc["projectId"])
-        results.append(FileUploadOut(**doc))
-    return results
-
-
-@admin_router.delete("/uploads/{id}")
-async def delete_upload(id: str, current_user: dict = Depends(get_current_user)):
-    # Only super_admin can delete uploads
-    if current_user["role"] != "super_admin":
-        raise HTTPException(status_code=403, detail="Only Super Admin can delete uploads")
-
-    upload = await db.uploads.find_one({"_id": ObjectId(id)})
-    if not upload:
-        raise HTTPException(status_code=404, detail="Upload not found")
-
-    file_path = upload["filePath"]
-    if os.path.exists(file_path):
-        os.remove(file_path)
-
-    await db.uploads.delete_one({"_id": ObjectId(id)})
-    return {"message": "Upload deleted successfully"}
-
-
-# ───────────────────────────────
-# 📊 Admin Summary Endpoint (Both Admins Can View)
-# ───────────────────────────────
 @admin_router.get("/summary")
-async def get_admin_summary(current_user: dict = Depends(get_current_user)):
-    if current_user["role"] not in ["super_admin", "sub_admin"]:
-        raise HTTPException(status_code=403, detail="Admin access only")
+async def get_summary(
+    current_user: dict = Depends(get_current_user)
+):
+    require_admin(current_user)
 
-    total_users = await db.users.count_documents({})
-    super_admin_count = await db.users.count_documents({"role": "super_admin"})
-    sub_admin_count = await db.users.count_documents({"role": "sub_admin"})
-    client_count = await db.users.count_documents({"role": "client"})
-
-    total_projects = await db.projects.count_documents({})
-    pending = await db.projects.count_documents({"status": "pending"})
-    in_progress = await db.projects.count_documents({"status": "in_progress"})
-    delivered = await db.projects.count_documents({"status": "delivered"})
-
-    upload_count = await db.uploads.count_documents({})
-    contact_count = await db.contact_forms.count_documents({})
-    subscriber_count = await db.newsletter.count_documents({})
-
-    total_invoices = await db.invoices.count_documents({})
-    paid = await db.invoices.count_documents({"isPaid": True})
-    unpaid = await db.invoices.count_documents({"isPaid": False})
-
-    return {
-        "users": {
-            "total": total_users,
-            "super_admin": super_admin_count,
-            "sub_admin": sub_admin_count,
-            "clients": client_count
-        },
-        "projects": {
-            "total": total_projects,
-            "pending": pending,
-            "in_progress": in_progress,
-            "delivered": delivered
-        },
-        "uploads": upload_count,
-        "contacts": contact_count,
-        "subscribers": subscriber_count,
-        "invoices": {
-            "total": total_invoices,
-            "paid": paid,
-            "unpaid": unpaid
-        }
-    }
+    return await admin_service.get_summary()
 
 
-# ───────────────────────────────
-# 📧 Email Invoice to Client (Super Admin Only)
-# ───────────────────────────────
-@admin_router.post("/invoices/{invoice_id}/send")
-async def send_invoice(invoice_id: str, current_user: dict = Depends(get_current_user)):
-    # Only super_admin can send invoices
-    if current_user["role"] != "super_admin":
-        raise HTTPException(status_code=403, detail="Only Super Admin can send invoices")
+# ------------------------------------------------------------------
+# Recent Activities
+# ------------------------------------------------------------------
 
-    invoice = await db.invoices.find_one({"_id": ObjectId(invoice_id)})
-    if not invoice:
-        raise HTTPException(status_code=404, detail="Invoice not found")
+@admin_router.get("/recent-activities")
+async def recent_activities(
+    limit: int = Query(
+        default=10,
+        ge=1,
+        le=100,
+        description="Number of recent activities"
+    ),
+    current_user: dict = Depends(get_current_user)
+):
+    require_admin(current_user)
 
-    project = await db.projects.find_one({"_id": invoice["projectId"]})
-    if not project:
-        raise HTTPException(status_code=404, detail="Linked project not found")
+    return await admin_service.get_recent_activities(limit)
 
-    user = await db.users.find_one({"_id": project["userId"]})
-    if not user:
-        raise HTTPException(status_code=404, detail="Client not found")
 
-    file_path = invoice["fileUrl"]
-    if not os.path.exists(file_path):
-        raise HTTPException(status_code=404, detail="Invoice file missing")
+# ------------------------------------------------------------------
+# System Statistics
+# ------------------------------------------------------------------
 
-    subject = f"\ud83d\udccc Invoice #{invoice['invoiceNumber']} for '{project['title']}'"
-    body = f"""Hello {user['name']},
+@admin_router.get("/system-stats")
+async def system_stats(
+    current_user: dict = Depends(get_current_user)
+):
+    require_admin(current_user)
 
-Please find attached the invoice for your project titled: {project['title']}.
-
-Amount: ₹{invoice['amount']}  
-Status: {'PAID' if invoice['isPaid'] else 'UNPAID'}  
-Date: {invoice['generatedOn'].strftime('%Y-%m-%d')}
-
-Regards,  
-Tanmay (FluxCode)
-"""
-
-    response = send_invoice_email(user["email"], subject, body, file_path)
-
-    if response.status_code != 200:
-        raise HTTPException(status_code=500, detail="Mailgun failed to send email")
-
-    return {"message": "Invoice emailed successfully to client", "email": user["email"]}
+    return await admin_service.get_system_stats()

@@ -1,87 +1,104 @@
-from fastapi import APIRouter, HTTPException, Depends
+"""
+Blogs API
+"""
+
 from typing import List
-from datetime import datetime
-from bson import ObjectId
-from bson.errors import InvalidId
+
+from fastapi import APIRouter, Depends, HTTPException
 
 from app.api.auth import get_current_user
-from app.db.database import db
 from app.db.schemas import BlogCreate, BlogOut
+from app.exceptions import exception_to_http
+from app.services.service_layer import BlogService
+
 
 blog_router = APIRouter()
 
-
-# ───────────────────────────────
-# ✍️ Create Blog (Super Admin Only)
-# ───────────────────────────────
-@blog_router.post("/", response_model=BlogOut)
-async def create_blog(blog: BlogCreate, current_user: dict = Depends(get_current_user)):
-    if current_user["role"] != "super_admin":
-        raise HTTPException(status_code=403, detail="Only Super Admin can create blogs")
-
-    existing_slug = await db.blogs.find_one({"slug": blog.slug})
-    if existing_slug:
-        raise HTTPException(status_code=400, detail="Slug must be unique")
-
-    new_blog = {
-        "title": blog.title,
-        "slug": blog.slug,
-        "content": blog.content,
-        "thumbnail": blog.thumbnail,
-        "author": blog.author,
-        "views": 0,
-        "createdAt": datetime.utcnow(),
-        "updatedAt": datetime.utcnow()
-    }
-
-    result = await db.blogs.insert_one(new_blog)
-    new_blog["id"] = str(result.inserted_id)
-    return BlogOut(**new_blog)
+blog_service = BlogService()
 
 
-# ───────────────────────────────
-# 📄 Get All Blogs (Public)
-# ───────────────────────────────
-@blog_router.get("/", response_model=List[BlogOut])
-async def get_all_blogs():
-    blogs_cursor = db.blogs.find().sort("createdAt", -1)
-    blogs = []
-    async for blog in blogs_cursor:
-        blog["id"] = str(blog["_id"])
-        blogs.append(BlogOut(**blog))
-    return blogs
-
-
-# ───────────────────────────────
-# 📄 Get Blog by Slug + Increment Views
-# ───────────────────────────────
-@blog_router.get("/{slug}", response_model=BlogOut)
-async def get_blog_by_slug(slug: str):
-    blog = await db.blogs.find_one({"slug": slug})
-    if not blog:
-        raise HTTPException(status_code=404, detail="Blog not found")
-
-    await db.blogs.update_one({"_id": blog["_id"]}, {"$inc": {"views": 1}})
-    blog["views"] += 1
-    blog["id"] = str(blog["_id"])
-    return BlogOut(**blog)
-
-
-# ───────────────────────────────
-# ❌ Delete Blog (Super Admin Only)
-# ───────────────────────────────
-@blog_router.delete("/{id}")
-async def delete_blog(id: str, current_user: dict = Depends(get_current_user)):
-    if current_user["role"] != "super_admin":
-        raise HTTPException(status_code=403, detail="Only Super Admin can delete blogs")
+@blog_router.post(
+    "/",
+    response_model=BlogOut
+)
+async def create_blog(
+    blog: BlogCreate,
+    current_user: dict = Depends(get_current_user)
+):
+    """Create blog"""
 
     try:
-        obj_id = ObjectId(id)
-    except InvalidId:
-        raise HTTPException(status_code=400, detail="Invalid blog ID")
+        if current_user["role"] != "super_admin":
+            raise HTTPException(
+                status_code=403,
+                detail="Only Super Admin can create blogs"
+            )
 
-    result = await db.blogs.delete_one({"_id": obj_id})
-    if result.deleted_count == 0:
-        raise HTTPException(status_code=404, detail="Blog not found")
+        return await blog_service.create_blog(
+            current_user=current_user,
+            title=blog.title,
+            slug=blog.slug,
+            content=blog.content,
+            thumbnail=blog.thumbnail,
+        )
 
-    return {"message": "Blog deleted successfully"}
+    except Exception as e:
+        raise exception_to_http(e)
+
+
+@blog_router.get(
+    "/",
+    response_model=List[BlogOut]
+)
+async def get_all_blogs():
+    """Get all blogs"""
+
+    try:
+        return await blog_service.get_all_blogs()
+
+    except Exception as e:
+        raise exception_to_http(e)
+
+
+@blog_router.get(
+    "/{slug}",
+    response_model=BlogOut
+)
+async def get_blog_by_slug(
+    slug: str
+):
+    """Get blog by slug"""
+
+    try:
+        return await blog_service.get_blog_by_slug(
+            slug
+        )
+
+    except Exception as e:
+        raise exception_to_http(e)
+
+
+@blog_router.delete(
+    "/{blog_id}",
+    response_model=dict
+)
+async def delete_blog(
+    blog_id: str,
+    current_user: dict = Depends(get_current_user)
+):
+    """Delete blog"""
+
+    try:
+        if current_user["role"] != "super_admin":
+            raise HTTPException(
+                status_code=403,
+                detail="Only Super Admin can delete blogs"
+            )
+
+        return await blog_service.delete_blog(
+            blog_id=blog_id,
+            current_user=current_user
+        )
+
+    except Exception as e:
+        raise exception_to_http(e)

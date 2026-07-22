@@ -1,18 +1,13 @@
-from typing import List
-
 from fastapi import APIRouter, Depends
 
 from app.api.auth import get_current_user
-from app.db.schemas import ProjectOut
-from app.services.project_service import ProjectService
 from app.services.invoice_service import InvoiceService
 from app.core.exceptions import AuthenticationException
-from app.db.schemas import StatusUpdate, BudgetUpdate
+from app.db.schemas import InvoiceOut, PaymentUpdate
 
 
-project_router = APIRouter()
+invoice_router = APIRouter()
 
-project_service = ProjectService()
 invoice_service = InvoiceService()
 
 
@@ -45,100 +40,81 @@ def require_super_admin(current_user: dict):
 
 
 # ------------------------------------------------------------------
-# Client - My Projects
+# Client - View Invoice by Project
 # ------------------------------------------------------------------
 
-@project_router.get(
-    "/",
-    response_model=List[ProjectOut]
+@invoice_router.get(
+    "/project/{project_id}",
+    response_model=InvoiceOut
 )
-async def get_my_projects(
+async def get_invoice_by_project(
+    project_id: str,
     current_user: dict = Depends(get_current_user)
 ):
     require_client(current_user)
 
-    return await project_service.get_my_projects(
-        current_user["id"]
+    return await invoice_service.get_invoice_by_project(
+        project_id=project_id,
+        current_user_id=current_user["id"]
     )
 
 
 # ------------------------------------------------------------------
-# Admin - All Projects
+# Admin - Get Invoice by Invoice ID
 # ------------------------------------------------------------------
 
-@project_router.get(
-    "/all",
-    response_model=List[ProjectOut]
+@invoice_router.get(
+    "/{invoice_id}",
+    response_model=InvoiceOut
 )
-async def get_all_projects(
+async def get_invoice(
+    invoice_id: str,
     current_user: dict = Depends(get_current_user)
 ):
     require_admin(current_user)
 
-    return await project_service.get_all_projects()
+    return await invoice_service.get_invoice(
+        invoice_id
+    )
 
 
 # ------------------------------------------------------------------
-# Admin - Update Status
+# Admin - Send Invoice
 # ------------------------------------------------------------------
 
-@project_router.patch(
-    "/{project_id}/status"
+@invoice_router.post(
+    "/{invoice_id}/send"
 )
-async def update_project_status(
-    project_id: str,
-    payload: StatusUpdate,
+async def send_invoice(
+    invoice_id: str,
     current_user: dict = Depends(get_current_user)
 ):
     require_super_admin(current_user)
 
-    await project_service.update_status(
-        project_id,
-        payload.status
+    return await invoice_service.send_invoice_to_client(
+        invoice_id
+    )
+
+
+# ------------------------------------------------------------------
+# Admin - Update Payment Status
+# ------------------------------------------------------------------
+
+@invoice_router.patch(
+    "/{invoice_id}/payment"
+)
+async def update_payment_status(
+    invoice_id: str,
+    payload: PaymentUpdate,
+    current_user: dict = Depends(get_current_user)
+):
+    require_super_admin(current_user)
+
+    await invoice_service.update_payment_status(
+        invoice_id=invoice_id,
+        is_paid=payload.isPaid
     )
 
     return {
-        "message": "Project status updated successfully."
+        "message": "Invoice payment status updated successfully."
     }
-
-
-# ------------------------------------------------------------------
-# Admin - Update Budget
-# ------------------------------------------------------------------
-
-@project_router.patch(
-    "/{project_id}/budget"
-)
-async def update_budget(
-    project_id: str,
-    payload: BudgetUpdate,
-    current_user: dict = Depends(get_current_user)
-):
-    require_super_admin(current_user)
-
-    await project_service.set_budget(
-        project_id,
-        payload.budget
-    )
-
-    return {
-        "message": "Project budget updated successfully."
-    }
-
-
-# ------------------------------------------------------------------
-# Admin - Generate Invoice
-# ------------------------------------------------------------------
-
-@project_router.post(
-    "/{project_id}/invoice"
-)
-async def generate_invoice(
-    project_id: str,
-    current_user: dict = Depends(get_current_user)
-):
-    require_super_admin(current_user)
-
-    return await invoice_service.generate_invoice(
-        project_id
-    )

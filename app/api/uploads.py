@@ -1,74 +1,121 @@
-from fastapi import APIRouter, UploadFile, File, Form, Depends, HTTPException
+from typing import List
+
+from fastapi import APIRouter, Depends, File, Form, UploadFile
 from fastapi.responses import FileResponse
-from datetime import datetime
-from pathlib import Path
-from uuid import uuid4
-from bson import ObjectId
-import os
 
 from app.api.auth import get_current_user
-from app.db.database import db
+from app.core.exceptions import AuthenticationException
 from app.db.schemas import FileUploadOut
+from app.services.service_layer import UploadService
+
 
 upload_router = APIRouter()
 
-UPLOAD_DIR = Path("app/uploads")
-UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
+upload_service = UploadService()
 
 
-# ───────────────────────────────
-# ⬆️ Upload File (Client Only)
-# ───────────────────────────────
-@upload_router.post("/", response_model=FileUploadOut)
+# ------------------------------------------------------------------
+# Helpers
+# ------------------------------------------------------------------
+
+def require_client(current_user: dict):
+    if current_user.get("role") != "client":
+        raise AuthenticationException(
+            "Only clients can access this endpoint."
+        )
+
+
+def require_admin(current_user: dict):
+    if current_user.get("role") not in (
+        "super_admin",
+        "sub_admin",
+    ):
+        raise AuthenticationException(
+            "Admin access only."
+        )
+
+
+def require_super_admin(current_user: dict):
+    if current_user.get("role") != "super_admin":
+        raise AuthenticationException(
+            "Only Super Admin can perform this action."
+        )
+
+
+# ------------------------------------------------------------------
+# Client - Upload File
+# ------------------------------------------------------------------
+
+@upload_router.post(
+    "/",
+    response_model=FileUploadOut,
+)
 async def upload_file(
     file: UploadFile = File(...),
     projectId: str = Form(...),
-    current_user: dict = Depends(get_current_user)
+    current_user: dict = Depends(get_current_user),
 ):
-    if current_user["role"] != "client":
-        raise HTTPException(status_code=403, detail="Only clients can upload files")
+    require_client(current_user)
 
-    project = await db.projects.find_one({
-        "_id": ObjectId(projectId),
-        "userId": ObjectId(current_user["id"])
-    })
-    if not project:
-        raise HTTPException(status_code=404, detail="Project not found or access denied")
+    return await upload_service.upload_file(
+        file=file,
+        project_id=projectId,
+        current_user=current_user,
+    )
 
-    ext = file.filename.split(".")[-1]
-    saved_name = f"{uuid4().hex}.{ext}"
-    saved_path = UPLOAD_DIR / saved_name
 
-    with open(saved_path, "wb") as buffer:
-        buffer.write(await file.read())
+# ------------------------------------------------------------------
+# Admin - Get All Uploads
+# ------------------------------------------------------------------
 
-    upload_doc = {
-        "userId": ObjectId(current_user["id"]),
-        "projectId": ObjectId(projectId),
-        "fileName": file.filename,
-        "filePath": str(saved_path),
-        "uploadedAt": datetime.utcnow()
+@upload_router.get(
+    "/list",
+    response_model=List[FileUploadOut],
+)
+async def get_all_uploads(
+    current_user: dict = Depends(get_current_user),
+):
+    require_admin(current_user)
+
+    return await upload_service.get_all_uploads()
+
+
+# ------------------------------------------------------------------
+# Admin - Download File
+# ------------------------------------------------------------------
+
+@upload_router.get("/download/{filename}")
+async def download_file(
+    filename: str,
+    current_user: dict = Depends(get_current_user),
+):
+    require_super_admin(current_user)
+
+    file_path = await upload_service.download_file(
+        filename
+    )
+
+    return FileResponse(
+        path=str(file_path),
+        filename=filename,
+    )
+
+
+# ------------------------------------------------------------------
+# Admin - Delete Upload
+# ------------------------------------------------------------------
+
+@upload_router.delete("/{upload_id}")
+async def delete_upload(
+    upload_id: str,
+    current_user: dict = Depends(get_current_user),
+):
+    require_super_admin(current_user)
+
+    await upload_service.delete_upload(
+        upload_id
+    )
+
+    return {
+        "message": "Upload deleted successfully."
     }
-
-    result = await db.uploads.insert_one(upload_doc)
-    upload_doc["id"] = str(result.inserted_id)
-    upload_doc["userId"] = str(upload_doc["userId"])
-    upload_doc["projectId"] = str(upload_doc["projectId"])
-
-    return FileUploadOut(**upload_doc)
-
-
-# ───────────────────────────────
-# 📄 Download Uploaded File (Super Admin Only)
-# ───────────────────────────────
-@upload_router.get("/{filename}")
-async def get_uploaded_file(filename: str, current_user: dict = Depends(get_current_user)):
-    if current_user["role"] != "super_admin":
-        raise HTTPException(status_code=403, detail="Only Super Admin can download files")
-
-    file_path = UPLOAD_DIR / filename
-    if not file_path.exists():
-        raise HTTPException(status_code=404, detail="File not found")
-
-    return FileResponse(path=file_path, filename=filename)
-

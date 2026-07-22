@@ -1,206 +1,222 @@
 """
 Requirements Module API
 """
-from fastapi import APIRouter, Depends, HTTPException
-from typing import List
 
+from fastapi import APIRouter, Depends, HTTPException
+
+from app.api.auth import get_current_user
 from app.db.schemas import (
     RequirementCreate,
     RequirementUpdate,
     RequirementOut,
     RequirementApprovalRequest
 )
-from app.services.service_layer import RequirementService, ActivityLogService
 from app.exceptions import exception_to_http
-from app.logger import logger_project
-from app.api.auth import get_current_user
+from app.services.service_layer import RequirementService
+
 
 requirement_router = APIRouter()
+
 requirement_service = RequirementService()
-activity_service = ActivityLogService()
 
 
-@requirement_router.post("/requirements", response_model=dict)
-async def create_requirement(req: RequirementCreate, current_user: dict = Depends(get_current_user)):
-    """Create requirement documentation (Admins only)"""
+@requirement_router.post(
+    "/requirements",
+    response_model=RequirementOut
+)
+async def create_requirement(
+    req: RequirementCreate,
+    current_user: dict = Depends(get_current_user)
+):
+    """Create requirement"""
+
     try:
-        if current_user["role"] not in ["super_admin", "sub_admin"]:
-            raise HTTPException(status_code=403, detail="Only admins can create requirements")
-        
-        req_dict = req.dict()
-        result = await requirement_service.create_requirement(
+        if current_user["role"] not in [
+            "super_admin",
+            "sub_admin"
+        ]:
+            raise HTTPException(
+                status_code=403,
+                detail="Only admins can create requirements"
+            )
+
+        return await requirement_service.create_requirement(
+            current_user=current_user,
             created_by=current_user["id"],
-            **req_dict
+            **req.dict()
         )
-        await activity_service.log_activity(
-            current_user["id"], current_user["role"],
-            "Requirement Created", "Requirement", result["id"]
-        )
-        
-        logger_project.info(f"Requirement created: {result['id']} by {current_user['email']}")
-        return result
+
     except Exception as e:
         raise exception_to_http(e)
 
 
-@requirement_router.get("/requirements/{requirement_id}", response_model=dict)
-async def get_requirement(requirement_id: str, current_user: dict = Depends(get_current_user)):
-    """Get requirement details"""
+@requirement_router.get(
+    "/requirements/{requirement_id}",
+    response_model=RequirementOut
+)
+async def get_requirement(
+    requirement_id: str,
+    current_user: dict = Depends(get_current_user)
+):
+    """Get requirement"""
+
     try:
-        req = await requirement_service.req_repo.find_by_id(requirement_id)
-        if not req:
-            raise HTTPException(status_code=404, detail="Requirement not found")
-        
-        req["id"] = str(req["_id"])
-        return req
+        return await requirement_service.get_requirement(
+            requirement_id
+        )
+
     except Exception as e:
         raise exception_to_http(e)
 
 
-@requirement_router.put("/requirements/{requirement_id}", response_model=dict)
-async def update_requirement(requirement_id: str, updates: RequirementUpdate, current_user: dict = Depends(get_current_user)):
+@requirement_router.put(
+    "/requirements/{requirement_id}",
+    response_model=RequirementOut
+)
+async def update_requirement(
+    requirement_id: str,
+    updates: RequirementUpdate,
+    current_user: dict = Depends(get_current_user)
+):
     """Update requirement"""
+
     try:
-        if current_user["role"] not in ["super_admin", "sub_admin"]:
-            raise HTTPException(status_code=403, detail="Only admins can update requirements")
-        
-        update_dict = updates.dict(exclude_unset=True)
-        result = await requirement_service.update_requirement(
+        if current_user["role"] not in [
+            "super_admin",
+            "sub_admin"
+        ]:
+            raise HTTPException(
+                status_code=403,
+                detail="Only admins can update requirements"
+            )
+
+        return await requirement_service.update_requirement(
             requirement_id=requirement_id,
+            current_user=current_user,
             updated_by=current_user["id"],
-            **update_dict
+            **updates.dict(exclude_unset=True)
         )
-        
-        await activity_service.log_activity(
-            current_user["id"], current_user["role"],
-            "Requirement Updated", "Requirement", requirement_id,
-            {"updates": update_dict}
-        )
-        
-        logger_project.info(f"Requirement updated: {requirement_id} by {current_user['email']}")
-        return result
+
     except Exception as e:
         raise exception_to_http(e)
-    
-@requirement_router.patch("/requirements/{requirement_id}/approve", response_model=dict)
+
+
+@requirement_router.patch(
+    "/requirements/{requirement_id}/approve",
+    response_model=RequirementOut
+)
 async def approve_requirement(
     requirement_id: str,
     payload: RequirementApprovalRequest,
     current_user: dict = Depends(get_current_user)
 ):
-    """Approve requirement (Super Admin only)"""
-    try:
+    """Approve requirement"""
 
+    try:
         if current_user["role"] != "super_admin":
             raise HTTPException(
                 status_code=403,
                 detail="Only Super Admin can approve requirements"
             )
 
-        result = await requirement_service.approve_requirement(
+        return await requirement_service.approve_requirement(
             requirement_id=requirement_id,
+            current_user=current_user,
             approved_by=current_user["id"],
             remarks=payload.remarks
         )
 
-        await activity_service.log_activity(
-            current_user["id"],
-            current_user["role"],
-            "Requirement Approved",
-            "Requirement",
-            requirement_id
-        )
-
-        logger_project.info(
-            f"Requirement approved: {requirement_id} by {current_user['email']}"
-        )
-
-        return result
-
     except Exception as e:
         raise exception_to_http(e)
 
-@requirement_router.patch("/requirements/{requirement_id}/request-changes", response_model=dict)
+
+@requirement_router.patch(
+    "/requirements/{requirement_id}/request-changes",
+    response_model=RequirementOut
+)
 async def request_requirement_changes(
     requirement_id: str,
     payload: RequirementApprovalRequest,
     current_user: dict = Depends(get_current_user)
 ):
-    """Request requirement changes (Super Admin only)"""
-    try:
+    """Request requirement changes"""
 
+    try:
         if current_user["role"] != "super_admin":
             raise HTTPException(
                 status_code=403,
                 detail="Only Super Admin can request changes"
             )
 
-        result = await requirement_service.request_changes(
+        return await requirement_service.request_changes(
             requirement_id=requirement_id,
+            current_user=current_user,
             remarks=payload.remarks
         )
 
-        await activity_service.log_activity(
-            current_user["id"],
-            current_user["role"],
-            "Requirement Changes Requested",
-            "Requirement",
-            requirement_id
-        )
-
-        logger_project.info(
-            f"Requirement changes requested: {requirement_id}"
-        )
-
-        return result
-
     except Exception as e:
         raise exception_to_http(e)
 
-@requirement_router.delete("/requirements/{requirement_id}", response_model=dict)
-async def delete_requirement(requirement_id: str, current_user: dict = Depends(get_current_user)):
+
+@requirement_router.delete(
+    "/requirements/{requirement_id}",
+    response_model=dict
+)
+async def delete_requirement(
+    requirement_id: str,
+    current_user: dict = Depends(get_current_user)
+):
     """Delete requirement"""
+
     try:
         if current_user["role"] != "super_admin":
-            raise HTTPException(status_code=403, detail="Only super admin can delete requirements")
-        
-        deleted = await requirement_service.req_repo.delete(requirement_id)
-        if not deleted:
-            raise HTTPException(status_code=404, detail="Requirement not found")
-        
-        await activity_service.log_activity(
-            current_user["id"], current_user["role"],
-            "Requirement Deleted", "Requirement", requirement_id
+            raise HTTPException(
+                status_code=403,
+                detail="Only super admin can delete requirements"
+            )
+
+        return await requirement_service.delete_requirement(
+            requirement_id=requirement_id,
+            current_user=current_user
         )
-        
-        return {"message": "Requirement deleted successfully"}
+
     except Exception as e:
         raise exception_to_http(e)
 
 
-@requirement_router.get("/leads/{lead_id}/requirements", response_model=dict)
-async def get_lead_requirements(lead_id: str, current_user: dict = Depends(get_current_user)):
-    """Get requirements for lead"""
+@requirement_router.get(
+    "/leads/{lead_id}/requirements",
+    response_model=RequirementOut
+)
+async def get_lead_requirements(
+    lead_id: str,
+    current_user: dict = Depends(get_current_user)
+):
+    """Get lead requirements"""
+
     try:
-        req = await requirement_service.req_repo.find_by_lead(lead_id)
-        if not req:
-            raise HTTPException(status_code=404, detail="No requirements found for this lead")
-        
-        req["id"] = str(req["_id"])
-        return req
+        return await requirement_service.get_lead_requirements(
+            lead_id
+        )
+
     except Exception as e:
         raise exception_to_http(e)
 
 
-@requirement_router.get("/projects/{project_id}/requirements", response_model=dict)
-async def get_project_requirements(project_id: str, current_user: dict = Depends(get_current_user)):
-    """Get requirements for project"""
+@requirement_router.get(
+    "/projects/{project_id}/requirements",
+    response_model=RequirementOut
+)
+async def get_project_requirements(
+    project_id: str,
+    current_user: dict = Depends(get_current_user)
+):
+    """Get project requirements"""
+
     try:
-        req = await requirement_service.req_repo.find_by_project(project_id)
-        if not req:
-            raise HTTPException(status_code=404, detail="No requirements found for this project")
-        
-        req["id"] = str(req["_id"])
-        return req
+        return await requirement_service.get_project_requirements(
+            project_id
+        )
+
     except Exception as e:
         raise exception_to_http(e)

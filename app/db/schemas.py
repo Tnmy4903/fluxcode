@@ -1,6 +1,5 @@
-from pydantic import BaseModel, EmailStr
-from fastapi import UploadFile
-from typing import Optional, List, Dict, Any
+from pydantic import BaseModel, EmailStr, Field, HttpUrl
+from typing import Any, Optional, List, Dict
 from datetime import datetime, date
 from enum import Enum
 
@@ -18,12 +17,30 @@ class UserLogin(BaseModel):
     email: EmailStr
     password: str
 
+class UserRole(str, Enum):
+    SUPER_ADMIN = "super_admin"
+    SUB_ADMIN = "sub_admin"
+    CLIENT = "client"
+
+
+class AdminCreate(BaseModel):
+    email: EmailStr
+    name: str
+
+class PromoteRequest(BaseModel):
+    user_id: str
+
 class UserOut(BaseModel):
     id: str
     name: str
     email: EmailStr
-    role: str  # "super_admin" | "sub_admin" | "client"
+    role: UserRole  # "super_admin" | "sub_admin" | "client"
     phone: Optional[str] = None
+
+class LoginResponse(BaseModel):
+    access_token: str
+    token_type: str
+    user: UserOut
 
 # ───────────────────────────────
 # 📝 Blog Schemas
@@ -33,8 +50,7 @@ class BlogCreate(BaseModel):
     title: str
     slug: str
     content: str
-    thumbnail: Optional[str] = None
-    author: str
+    thumbnail: Optional[HttpUrl]
 
 class BlogOut(BlogCreate):
     id: str
@@ -46,18 +62,44 @@ class BlogOut(BlogCreate):
 # 📁 Project Schemas
 # ───────────────────────────────
 
+class ProjectStatus(str, Enum):
+    PENDING = "pending"
+    IN_PROGRESS = "in_progress"
+    TESTING = "testing"
+    DEPLOYMENT = "deployment"
+    DELIVERED = "delivered"
+    COMPLETED = "completed"
+
 class ProjectCreate(BaseModel):
     title: str
     description: str
-    deadline: Optional[date]
-    budget: Optional[float]
+    deadline: Optional[date] = None
+    budget: Optional[float] = Field(
+        default=None,
+        gt=0
+    )
 
 class ProjectOut(ProjectCreate):
     id: str
     userId: str
-    status: str
+
+    quotationId: Optional[str] = None
+    leadId: Optional[str] = None
+
+    assignedAdmin: Optional[str] = None
+    assignedSubAdmin: Optional[str] = None
+
+    status: ProjectStatus
+
     createdAt: datetime
     updatedAt: datetime
+
+class StatusUpdate(BaseModel):
+    status: ProjectStatus
+
+
+class BudgetUpdate(BaseModel):
+    budget: float = Field(gt=0)
 
 # ───────────────────────────────
 # 📎 File Upload Schema
@@ -65,72 +107,132 @@ class ProjectOut(ProjectCreate):
 
 class FileUploadOut(BaseModel):
     id: str
+
     userId: str
     projectId: str
+
     fileName: str
+    storedFileName: str
     filePath: str
+
+    fileSize: int
+    contentType: Optional[str] = None
+    extension: str
+
     uploadedAt: datetime
 
 # ───────────────────────────────
-# 🧾 Invoice Schema
+# 🧾 Invoice Enums
+# ───────────────────────────────
+
+class InvoiceStatus(str, Enum):
+    GENERATED = "generated"
+    SENT = "sent"
+    PAID = "paid"
+    CANCELLED = "cancelled"
+
+
+# ───────────────────────────────
+# 🧾 Invoice Schemas
 # ───────────────────────────────
 
 class InvoiceOut(BaseModel):
     id: str
+
+    # Relationships
     projectId: str
-    fileUrl: str
-    amount: float
+    clientId: str
+
+    # Invoice Details
     invoiceNumber: str
-    isPaid: bool
+    title: str
+    description: Optional[str] = None
+
+    # Financial
+    amount: float = Field(gt=0)
     currency: str
+
+    # Payment
+    status: InvoiceStatus
+    isPaid: bool
+
+    # File
+    fileUrl: str
+
+    # Dates
     generatedOn: datetime
+    dueDate: Optional[date] = None
+    paidOn: Optional[datetime] = None
+
+    createdAt: datetime
+    updatedAt: datetime
+
+
+class PaymentUpdate(BaseModel):
+    isPaid: bool
 
 # ───────────────────────────────
 # 📬 Contact Form Schemas
 # ───────────────────────────────
 
 class ContactFormCreate(BaseModel):
-    name: str
+    name: str = Field(
+        min_length=2,
+        max_length=100
+    )
+
     email: EmailStr
-    message: str
+
+    message: str = Field(
+        min_length=10,
+        max_length=5000
+    )
+
 
 class ContactFormOut(ContactFormCreate):
     id: str
-    submittedAt: datetime
 
-# ───────────────────────────────
-# 📰 Newsletter Schemas
-# ───────────────────────────────
-
-class NewsletterSignup(BaseModel):
-    email: EmailStr
-
-class NewsletterOut(BaseModel):
-    id: str
-    email: EmailStr
-    subscribedAt: datetime
-
-class NewsletterBroadcast(BaseModel):
-    subject: str
-    body: str
-
-class NewsletterSendOut(BaseModel):
-    sentTo: int
-    subject: str
-    status: str
+    createdAt: datetime
+    updatedAt: datetime
 
 # ───────────────────────────────
 # 💼 CRM/Lead Schemas
 # ───────────────────────────────
 
+class LeadStage(str, Enum):
+    NEW = "New"
+    CONTACTED = "Contacted"
+    QUALIFIED = "Qualified"
+    PROPOSAL_SENT = "Proposal Sent"
+    NEGOTIATION = "Negotiation"
+    WON = "Won"
+    LOST = "Lost"
+
 class LeadCreate(BaseModel):
-    companyName: str
-    contactPerson: str
-    phone: str
-    email: EmailStr
-    business: str
-    leadSource: Optional[str] = None
-    notes: Optional[str] = None
+    companyName: Optional[str] = Field(
+        default=None,
+        max_length=200
+    )
+
+    contactPerson: str = Field(
+        min_length=2,
+        max_length=100
+    )
+
+    phone: Optional[str] = Field(
+        default=None,
+        max_length=20
+    )
+
+    business: str = Field(
+        min_length=2,
+        max_length=150
+    )
+
+    notes: Optional[str] = Field(
+        default=None,
+        max_length=5000
+    )
 
 class LeadUpdate(BaseModel):
     companyName: Optional[str] = None
@@ -139,21 +241,23 @@ class LeadUpdate(BaseModel):
     email: Optional[EmailStr] = None
     business: Optional[str] = None
     leadSource: Optional[str] = None
-    stage: Optional[str] = None
+    stage: Optional[LeadStage]
     assignedTo: Optional[str] = None
     notes: Optional[str] = None
 
 class LeadOut(LeadCreate):
     id: str
-    stage: str
+    stage: LeadStage
     assignedTo: Optional[str] = None
     createdAt: datetime
     updatedAt: datetime
 
 class LeadHistoryEvent(BaseModel):
-    field: str
+    action: str
+    field: Optional[str] = None
     oldValue: Optional[str] = None
     newValue: Optional[str] = None
+    message: Optional[str] = None
     changedBy: str
     timestamp: datetime
 
@@ -169,17 +273,38 @@ class RequirementStatus(str, Enum):
 class RequirementCreate(BaseModel):
     leadId: Optional[str] = None
     projectId: Optional[str] = None
-    businessName: str
-    businessType: str
-    targetAudience: str
-    goals: str
-    requiredFeatures: List[str]
-    preferredTech: List[str]
-    referenceWebsites: Optional[List[str]] = None
-    logoUrl: Optional[str] = None
-    deadline: Optional[date] = None
-    budgetRange: Optional[str] = None
-    additionalNotes: Optional[str] = None
+    businessName: str = Field(
+        min_length=2,
+        max_length=200
+    )
+
+    businessType: str = Field(
+        min_length=2,
+        max_length=100
+    )
+
+    targetAudience: str = Field(
+        min_length=2,
+        max_length=300
+    )
+
+    goals: str = Field(
+        min_length=5,
+        max_length=5000
+    )
+
+    requiredFeatures: List[str] = Field(
+        min_length=1
+    )
+
+    preferredTech: List[str] = Field(
+        min_length=1
+    )
+
+    additionalNotes: Optional[str] = Field(
+        default=None,
+        max_length=5000
+    )
 
 class RequirementUpdate(BaseModel):
     businessName: Optional[str] = None
@@ -212,6 +337,15 @@ class RequirementApprovalRequest(BaseModel):
 # 💰 Quotation Schemas
 # ───────────────────────────────
 
+class QuotationStatus(str, Enum):
+    DRAFT = "Draft"
+    SENT = "Sent"
+    VIEWED = "Viewed"
+    ACCEPTED = "Accepted"
+    REJECTED = "Rejected"
+    REVISION_REQUESTED = "Revision Requested"
+    EXPIRED = "Expired"
+
 class QuotationItemCreate(BaseModel):
     description: str
     quantity: float = 1.0
@@ -230,7 +364,7 @@ class QuotationCreate(BaseModel):
     notes: Optional[str] = None
 
 class QuotationUpdate(BaseModel):
-    status: Optional[str] = None
+    status: Optional[QuotationStatus] = None
     services: Optional[List[str]] = None
     items: Optional[List[QuotationItemCreate]] = None
     timeline: Optional[str] = None
@@ -244,7 +378,7 @@ class QuotationUpdate(BaseModel):
 class QuotationOut(QuotationCreate):
     id: str
     quotationNumber: str
-    status: str
+    status: QuotationStatus
     totalAmount: float
     createdAt: datetime
     updatedAt: datetime
@@ -257,12 +391,19 @@ class QuotationOut(QuotationCreate):
 # ───────────────────────────────
 
 class TimelineEventCreate(BaseModel):
-    projectId: str
-    title: str
-    description: Optional[str] = None
+    title: str = Field(
+        min_length=2,
+        max_length=200
+    )
+
+    description: Optional[str] = Field(
+        default=None,
+        max_length=2000
+    )
 
 class TimelineEventOut(TimelineEventCreate):
     id: str
+    projectId: str
     createdBy: str
     timestamp: datetime
 
@@ -271,12 +412,18 @@ class TimelineEventOut(TimelineEventCreate):
 # ───────────────────────────────
 
 class DiscussionMessageCreate(BaseModel):
-    projectId: str
-    message: str
+    message: str = Field(
+        min_length=1,
+        max_length=5000
+    )
+
     attachments: Optional[List[str]] = None
 
 class DiscussionReplyCreate(BaseModel):
-    message: str
+    message: str = Field(
+        min_length=1,
+        max_length=5000
+    )
     attachments: Optional[List[str]] = None
 
 class DiscussionMessageOut(BaseModel):
@@ -285,7 +432,7 @@ class DiscussionMessageOut(BaseModel):
     authorId: str
     authorName: str
     message: str
-    attachments: Optional[List[str]] = None
+    attachments: List[str] = []
     edited: bool = False
     seen: bool = False
     createdAt: datetime
@@ -297,7 +444,7 @@ class DiscussionReplyOut(BaseModel):
     authorId: str
     authorName: str
     message: str
-    attachments: Optional[List[str]] = None
+    attachments: List[str] = []
     edited: bool = False
     createdAt: datetime
     updatedAt: datetime
@@ -307,7 +454,6 @@ class DiscussionReplyOut(BaseModel):
 # ───────────────────────────────
 
 class DeliverablesCreate(BaseModel):
-    projectId: str
     deploymentUrl: Optional[str] = None
     sourceCode: Optional[str] = None
     documentation: Optional[str] = None
@@ -329,6 +475,7 @@ class DeliverablesUpdate(BaseModel):
 
 class DeliverablesOut(DeliverablesCreate):
     id: str
+    projectId: str
     createdAt: datetime
     updatedAt: datetime
 
@@ -342,7 +489,7 @@ class ActivityLogCreate(BaseModel):
     action: str
     entity: str
     entityId: str
-    details: Optional[Dict] = None
+    details: Dict[str, Any] = {}
 
 class ActivityLogOut(ActivityLogCreate):
     id: str
@@ -352,16 +499,14 @@ class ActivityLogOut(ActivityLogCreate):
 # 🔔 Notification Schemas
 # ───────────────────────────────
 
-class NotificationCreate(BaseModel):
+class NotificationOut(BaseModel):
+    id: str
     userId: str
     type: str
     title: str
     message: str
     entityId: Optional[str] = None
     entityType: Optional[str] = None
-
-class NotificationOut(NotificationCreate):
-    id: str
     read: bool = False
     createdAt: datetime
 
@@ -370,14 +515,27 @@ class NotificationOut(NotificationCreate):
 # ───────────────────────────────
 
 class PortfolioItemCreate(BaseModel):
-    title: str
-    slug: str
-    category: str
-    description: str
+    title: str = Field(min_length=2, max_length=200)
+
+    slug: str = Field(
+        min_length=2,
+        max_length=200,
+        pattern=r"^[a-z0-9-]+$"
+    )
+
+    category: str = Field(
+        min_length=2,
+        max_length=100
+    )
+
+    description: str = Field(
+        min_length=10,
+        max_length=5000
+    )
     techStack: List[str]
     websiteUrl: Optional[str] = None
     githubUrl: Optional[str] = None
-    images: Optional[List[str]] = None
+    images: List[str] = []
     featured: bool = False
     displayOrder: int = 0
 
@@ -404,44 +562,13 @@ class PortfolioItemOut(PortfolioItemCreate):
 # 🌐 Website CMS Schemas
 # ───────────────────────────────
 
-class WebsiteHeroCreate(BaseModel):
-    title: str
-    subtitle: str
-    image: Optional[str] = None
-    ctaText: Optional[str] = None
-    ctaLink: Optional[str] = None
-
-class WebsiteAboutCreate(BaseModel):
-    title: str
-    content: str
-    image: Optional[str] = None
-
-class WebsiteServiceCreate(BaseModel):
-    title: str
-    description: str
-    icon: Optional[str] = None
-
-class WebsiteFAQCreate(BaseModel):
-    question: str
-    answer: str
-    order: int = 0
-
-class WebsiteContactCreate(BaseModel):
-    phone: str
-    email: EmailStr
-    address: str
-    timezone: Optional[str] = None
-
-class WebsiteSocialCreate(BaseModel):
-    platform: str
-    url: str
-
 class WebsiteContentCreate(BaseModel):
     section: str
-    content: Dict
+    content: Dict[str, Any]
+
 
 class WebsiteContentOut(BaseModel):
     id: str
     section: str
-    content: Dict
+    content: Dict[str, Any]
     updatedAt: datetime
